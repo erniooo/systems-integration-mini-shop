@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="de">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta
+      name="description"
+      content="Mini-Shop – kleine Dinge für deinen Campus-Alltag."
+    />
+    <title>Mini-Shop · Für deinen Alltag</title>
+    <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+    <link rel="stylesheet" href="/style.css" />
+    <script src="/app.js" defer></script>
+  </head>
+  <body>
+    <header class="header">
+      <a class="brand" href="#products"
+        ><span class="brand-icon" aria-hidden="true">m.</span>mini-shop<span
+          class="brand-dot"
+          >®</span
+        ></a
+      >
+      <nav aria-label="Hauptnavigation">
+        <a href="#products" data-nav="products">Produkte</a>
+        <a href="#orders" data-nav="orders">Bestellungen</a>
+        <a href="#admin" data-nav="admin" id="admin-nav" hidden>Verwaltung</a>
+      </nav>
+      <div class="header-actions">
+        <button class="quiet" id="account-button">Anmelden</button>
+        <a class="cart-link" href="#cart" aria-label="Warenkorb"
+          ><svg viewBox="0 0 24 24" aria-hidden="true">
+            <path d="M3 4h2l2.5 11h10l3-8H6M9 20h.01M17 20h.01" /></svg
+          ><span class="cart-label">Warenkorb</span
+          ><span id="cart-count" class="count">0</span></a
+        >
+      </div>
+    </header>
+    <main id="main" tabindex="-1">
+      <p class="loading">Der Shop wird geladen …</p>
+    </main>
+    <footer>
+      <a class="footer-brand" href="#products">mini-shop.</a
+      ><span>Kleine Dinge. Guter Alltag.</span
+      ><span>Systems Integration · Lab 1</span>
+    </footer>
+    <div id="toast" role="status" aria-live="polite" hidden></div>
+    <dialog id="auth-dialog" aria-labelledby="auth-heading">
+      <div class="dialog-top">
+        <span class="eyebrow">DEIN KONTO</span
+        ><button class="icon-button" id="close-auth" aria-label="Schließen">
+          ×
+        </button>
+      </div>
+      <h2 id="auth-heading">Willkommen zurück.</h2>
+      <p id="auth-description" class="muted">
+        Melde dich an, um deine Bestellung abzuschließen.
+      </p>
+      <form id="auth-form">
+        <label id="register-name" hidden
+          >Name<input name="name" autocomplete="name" maxlength="100"
+        /></label>
+        <label
+          >E-Mail<input
+            name="email"
+            type="email"
+            autocomplete="username"
+            required
+            maxlength="254"
+        /></label>
+        <label
+          >Passwort<input
+            name="password"
+            type="password"
+            autocomplete="current-password"
+            required
+            maxlength="128"
+        /></label>
+        <label id="register-address" hidden
+          >Lieferadresse<textarea
+            name="address"
+            autocomplete="street-address"
+            maxlength="500"
+            rows="3"
+          ></textarea>
+        </label>
+        <p class="form-error" id="auth-error" role="alert"></p>
+        <button class="button full" type="submit" id="auth-submit">
+          Anmelden
+        </button>
+      </form>
+      <button class="text-button" id="toggle-auth">
+        Neu hier? Konto erstellen
+      </button>
+    </dialog>
+  </body>
+</html>

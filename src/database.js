@@ -19,7 +19,8 @@ export async function openDatabase(path, adminPassword) {
     CREATE TABLE IF NOT EXISTS products (
       id INTEGER PRIMARY KEY, erp_id TEXT UNIQUE, name TEXT NOT NULL,
       description TEXT NOT NULL, price_cents INTEGER NOT NULL CHECK(price_cents >= 0),
-      category TEXT NOT NULL DEFAULT 'Sonstiges', active INTEGER NOT NULL DEFAULT 1
+      category TEXT NOT NULL DEFAULT 'Sonstiges', active INTEGER NOT NULL DEFAULT 1,
+      stock INTEGER CHECK(stock IS NULL OR stock >= 0), stock_imported_at TEXT
     );
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id),
@@ -37,6 +38,17 @@ export async function openDatabase(path, adminPassword) {
     CREATE TABLE IF NOT EXISTS sessions (sid TEXT PRIMARY KEY, data TEXT NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);
+  // Vorhandene Lab-1-Datenbanken erhalten die neuen Felder, ohne Daten zu löschen.
+  const columns = db
+    .prepare("PRAGMA table_info(products)")
+    .all()
+    .map((column) => column.name);
+  if (!columns.includes("stock"))
+    db.exec(
+      "ALTER TABLE products ADD COLUMN stock INTEGER CHECK(stock IS NULL OR stock >= 0)",
+    );
+  if (!columns.includes("stock_imported_at"))
+    db.exec("ALTER TABLE products ADD COLUMN stock_imported_at TEXT");
   if (!db.prepare("SELECT 1 FROM metadata WHERE key = 'seeded'").get()) {
     const insert = db.prepare(
       "INSERT INTO products (name, description, price_cents, category) VALUES (?, ?, ?, ?)",

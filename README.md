@@ -1,4 +1,4 @@
-# Mini-Shop – Systems Integration, Lab 1
+# Mini-Shop – Systems Integration, Labs 1 und 2
 
 Ein lokaler Webshop mit JavaScript, Node.js, Express, SQLite und einer einfachen
 HTML/CSS-Oberfläche. Die Anwendung enthält Beispielprodukte und benötigt keinen
@@ -47,10 +47,73 @@ aufgeben.
 - Persönliche Kaufhistorie mit Positionen, Mengen, Gesamtbetrag und Bestellstatus.
 - Verwaltung aller Bestellungen mit den Statuswerten `pending`, `shipped`, `completed`.
 - Dauerhafte SQLite-Daten und Sitzungen, auch nach einem Neustart.
+- ERP-Produkte aus Excel- oder CSV-Dateien importieren und aktualisieren.
+- Den zuletzt importierten Bestand auf Produktkarten und im Warenkorb anzeigen.
 
 Es handelt sich um einen Übungs-Shop. Checkout erzeugt eine Bestellung; es gibt
-keine Zahlungsabwicklung und keinen tatsächlichen Versand. Lagerbestände werden
-in Lab 1 noch nicht geführt.
+keine Zahlungsabwicklung und keinen tatsächlichen Versand. Die Bestände von
+ERP-Produkten entsprechen dem letzten Dateiimport und sind nicht live.
+
+## Lab 2: Produkte aus dem Mini-ERP übernehmen
+
+1. Das vorhandene Mini-ERP starten und im Browser unter
+   `http://localhost:4004/products/webapp/index.html` die Produktliste öffnen.
+   Für das lokale ERP ist `alice` / `alice` das Übungskonto.
+2. In der Produkttabelle auf das Excel-Symbol **Exportieren** klicken. Darauf
+   achten, dass die Spalten **Product ID**, **Product Name**, **Beschreibung**,
+   **Price** und **Stock** ausgewählt sind. Der Export lädt eine `.xlsx`-Datei
+   herunter; ein aktiver Tabellenfilter kann den Export einschränken.
+3. Den Shop starten, als Verwaltung anmelden und **Verwaltung → Produkte aus
+   dem ERP importieren** öffnen. Die Excel-Datei auswählen und importieren.
+4. Den Importbericht prüfen und die Produktübersicht öffnen. Bei Änderungen im
+   ERP die Datei erneut exportieren und importieren.
+
+Alternativ unterstützt der Shop die CSV-Datei aus der ERP-Schnittstelle
+`/rest/api/getProducts`. Zum Beispiel kann sie lokal mit den im Mini-ERP
+vorkonfigurierten Zugangsdaten so gespeichert werden:
+
+```bash
+curl -u service-user:service-user http://localhost:4004/rest/api/getProducts -o products.csv
+```
+
+Der Dateiaustausch erfolgt manuell bei Bedarf. Sinnvoll sind aussagekräftige
+Dateinamen wie `products-2026-11-02.xlsx` und ein gemeinsamer, leicht auffindbarer
+Ordner, beispielsweise Downloads. Es gibt keinen automatischen Zeitplan.
+
+Der Shop akzeptiert `.xlsx` und UTF-8-`.csv` bis 2 MB und maximal 10.000
+Produktzeilen. Die Spaltennamen des ERP-Exports werden erkannt. Ein Produkt
+wird anhand der **Product ID** (`productID`) zugeordnet. Beim ersten Import wird
+es angelegt, bei weiteren Importen werden Name, Beschreibung, Preis und Bestand
+aktualisiert. Bereits vorhandene Kategorien bleiben erhalten; neue Produkte
+erhalten die Kategorie `Sonstiges`. Ein zuvor im Shop entferntes ERP-Produkt
+wird bei erneutem Import wieder sichtbar. Produkte, die in einer Datei fehlen,
+werden nicht entfernt, da ein Export auch gefiltert sein kann.
+
+Die CSV-Schnittstelle gibt z. B. `1200.00 EUR` als Preis aus. Der Shop führt
+Preise in Euro; andere ausdrücklich angegebene Währungen werden abgelehnt. Beim
+Excel-Export fehlt in der Standardansicht eine separate Währungsspalte. Für diese
+Dateien wird daher EUR angenommen. Leere Beschreibungen sind zulässig, weil sie
+auch im ERP vorkommen. Fehlende Pflichtspalten, doppelte Produkt-IDs, ungültige
+Preise oder Bestände und beschädigte Dateien führen zu einer Fehlermeldung. Es
+wird dann **keine Zeile** der Datei übernommen.
+
+Die in `erp_id` gespeicherte Produkt-ID (`productID`) ist die lesbare Kennung aus
+dem Datei-Export. Das ERP hat zusätzlich eine interne UUID (`ID`), die für die
+direkte Auftragsanbindung in Lab 3 relevant ist. Diese UUID muss dann über das
+ERP zur Produkt-ID ermittelt werden; sie ist im Standardexport nicht enthalten.
+
+Die CSV-Funktion des bereitgestellten ERP setzt Felder direkt mit Kommas
+zusammen. Enthält ein nicht maskiertes Feld selbst ein Komma, kann diese Ausgabe
+mehrdeutig oder ungültig sein; der Import lehnt solche fehlerhaften Zeilen ab.
+In diesem Fall den Excel-Export verwenden.
+
+Der importierte Bestand ist eine **Momentaufnahme**, keine Live-Abfrage: Der
+Shop lehnt zwar eine Bestellung ab, deren Menge den letzten importierten
+Bestand überschreitet, reserviert oder reduziert aber keinen Bestand im ERP.
+Auch mehrere aufeinanderfolgende Bestellungen ändern die Momentaufnahme nicht.
+Erst in Lab 3 wird der Bestand live beim ERP abgefragt. Die lokale ERP-Datenbank
+ist standardmäßig im Arbeitsspeicher; Produktänderungen im ERP gehen beim
+Neustart verloren.
 
 ## Aufbau und Lesereihenfolge
 
@@ -64,6 +127,7 @@ src/
   app.js              HTTP-API, Anmeldung, Rechte und Eingabeprüfung
   database.js         SQLite-Schema, Beispielprodukte und Sitzungsspeicher
   order-service.js    Bestelllogik und Datenbanktransaktion
+  product-import.js   Excel-/CSV-Datei lesen, prüfen und Produkte abgleichen
   security.js         Passwort-Hashing und Validierungsfunktionen
 test/
   shop.test.js        Integrationstests gegen einen echten HTTP-Server und SQLite
@@ -88,7 +152,10 @@ Browser zurückgesendet.
 **Produkte (`products`)** enthalten zusätzlich zur lokalen ID ein optionales,
 eindeutiges `erp_id` für spätere Importe. Preise liegen als ganze Cent-Beträge
 vor. „Entfernen“ deaktiviert das Produkt (`active = 0`); bestehende Bestellungen
-behalten ihre Produktreferenz.
+behalten ihre Produktreferenz. `stock` und `stock_imported_at` speichern die
+letzte importierte Bestandsaufnahme. Für manuell angelegte Produkte ist der
+Bestand unbekannt (`NULL`). Beim ersten Start nach dem Update ergänzt eine kleine
+Migration die Felder in einer bestehenden Lab-1-Datenbank.
 
 **Bestellungen (`orders`)** gehören zu einem Kunden und enthalten Gesamtbetrag,
 Status, Bestellzeitpunkt sowie Name, E-Mail und Lieferadresse zum Zeitpunkt der
@@ -114,24 +181,26 @@ sind für den kleinen Übungs-Shop ausreichend.
 
 ## Wichtige API-Endpunkte
 
-| Methode        | Pfad                    | Zugriff / Zweck                        |
-| -------------- | ----------------------- | -------------------------------------- |
-| GET            | `/api/session`          | Angemeldeter Benutzer und CSRF-Token   |
-| POST           | `/api/register`         | Kundenkonto anlegen und anmelden       |
-| POST           | `/api/login`            | Anmelden                               |
-| POST           | `/api/logout`           | Abmelden                               |
-| PATCH          | `/api/profile`          | Eigene Kundendaten ändern              |
-| GET            | `/api/products`         | Aktive Produkte anzeigen               |
-| POST           | `/api/products`         | Verwaltung: Produkt anlegen            |
-| PATCH / DELETE | `/api/products/:id`     | Verwaltung: Produkt ändern / entfernen |
-| GET            | `/api/orders`           | Eigene Bestellungen anzeigen           |
-| POST           | `/api/orders`           | Bestellung anlegen                     |
-| GET            | `/api/admin/orders`     | Verwaltung: alle Bestellungen          |
-| PATCH          | `/api/admin/orders/:id` | Verwaltung: Bestellstatus ändern       |
+| Methode        | Pfad                         | Zugriff / Zweck                          |
+| -------------- | ---------------------------- | ---------------------------------------- |
+| GET            | `/api/session`               | Angemeldeter Benutzer und CSRF-Token     |
+| POST           | `/api/register`              | Kundenkonto anlegen und anmelden         |
+| POST           | `/api/login`                 | Anmelden                                 |
+| POST           | `/api/logout`                | Abmelden                                 |
+| PATCH          | `/api/profile`               | Eigene Kundendaten ändern                |
+| GET            | `/api/products`              | Aktive Produkte anzeigen                 |
+| POST           | `/api/products`              | Verwaltung: Produkt anlegen              |
+| PATCH / DELETE | `/api/products/:id`          | Verwaltung: Produkt ändern / entfernen   |
+| GET            | `/api/orders`                | Eigene Bestellungen anzeigen             |
+| POST           | `/api/orders`                | Bestellung anlegen                       |
+| GET            | `/api/admin/orders`          | Verwaltung: alle Bestellungen            |
+| PATCH          | `/api/admin/orders/:id`      | Verwaltung: Bestellstatus ändern         |
+| POST           | `/api/admin/import/products` | Verwaltung: Excel-/CSV-Datei importieren |
 
-Schreibende Aufrufe erwarten JSON, das Sitzungscookie und den Header
-`X-CSRF-Token` mit dem Wert aus `/api/session`. Beispiel für den Inhalt einer
-Bestellung:
+Schreibende Aufrufe erwarten das Sitzungscookie und den Header `X-CSRF-Token`
+mit dem Wert aus `/api/session`. Sie verwenden JSON; der Dateiimport verwendet
+`multipart/form-data` mit einem Dateifeld namens `file`. Beispiel für den Inhalt
+einer Bestellung:
 
 ```json
 { "items": [{ "productId": 1, "quantity": 2 }] }
@@ -150,7 +219,9 @@ npm test
 Die Tests verwenden einen temporären Datenbankordner. Sie prüfen Registrierung,
 Anmeldung, Rollen, CSRF, serverseitige Preisberechnung, ungültige Warenkörbe,
 Transaktions-Rollback, private Kaufhistorien, historische Daten, Produktverwaltung,
-Bestellstatus, Persistenz und Logout.
+Bestellstatus, Persistenz und Logout. Für Lab 2 prüfen sie den echten SAP-Excel-
+und ERP-CSV-Export, wiederholten Import, geänderte Preise und Bestände,
+fehlerhafte Dateien, Zugriffsrechte und die Migration einer Lab-1-Datenbank.
 
 Zum Ausprobieren im Browser:
 
@@ -163,8 +234,7 @@ Zum Ausprobieren im Browser:
 
 ## Erweiterung in den nächsten Labs
 
-- **Lab 2:** Dateiimport ergänzt Produkte anhand von `erp_id` oder aktualisiert sie.
-  Das konkrete Dateiformat und die ERP-Felder werden am tatsächlichen Export geprüft.
+- **Lab 2:** Dateiimport ergänzt und aktualisiert Produkte anhand der ERP-Produkt-ID.
 - **Lab 3:** Einen ERP-Client ergänzen. Bestände live aus dem ERP lesen und
   `placeOrder()` an die ERP-Auftragserstellung anbinden. Lokale Bestellübersichten
   müssen dann die führenden ERP-Daten berücksichtigen.
@@ -173,8 +243,8 @@ Zum Ausprobieren im Browser:
   und `failed` erweitern. Anfragen und Antworten mit einer Korrelations-ID verbinden.
   Vor Wiederholungsversuchen klären, wie doppelte ERP-Bestellungen vermieden werden.
 
-Aktuell sind nur die Funktionen für Lab 1 umgesetzt. Die Felder und die
-Bestellservice-Grenze erleichtern spätere Erweiterungen.
+Labs 1 und 2 sind umgesetzt. Die Bestellservice-Grenze erleichtert spätere
+Erweiterungen.
 
 ## Lokale Konfiguration und Daten
 

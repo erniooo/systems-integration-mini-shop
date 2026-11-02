@@ -20,6 +20,7 @@ const state = {
   search: "",
   category: "Alle",
   authMode: "login",
+  importResult: null,
 };
 try {
   const saved = JSON.parse(localStorage.getItem("minishop-cart") || "[]");
@@ -50,13 +51,16 @@ function notify(message, error = false) {
 }
 
 async function api(path, { method = "GET", body } = {}) {
+  const isFileUpload = body instanceof FormData;
   const response = await fetch(`/api${path}`, {
     method,
     headers: {
-      "Content-Type": "application/json",
+      ...(isFileUpload ? {} : { "Content-Type": "application/json" }),
       "X-CSRF-Token": state.csrfToken,
     },
-    ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    ...(body === undefined
+      ? {}
+      : { body: isFileUpload ? body : JSON.stringify(body) }),
   });
   const result = await response.json();
   if (!response.ok)
@@ -87,7 +91,11 @@ function saveCart() {
   updateHeader();
 }
 function addToCart(productId) {
+  const product = state.products.find((p) => p.id === productId);
   const item = state.cart.find((p) => p.productId === productId);
+  if (!product) return notify("Dieses Produkt ist nicht mehr verfügbar.", true);
+  if (product.stock !== null && (item?.quantity || 0) >= product.stock)
+    return notify("Der Bestand laut letztem Import ist erreicht.", true);
   if (item?.quantity >= 99)
     return notify("Maximal 99 Stück pro Produkt.", true);
   if (item) item.quantity++;
@@ -139,7 +147,19 @@ function illustration(product) {
 }
 
 function productCard(p) {
-  return `<article class="product-card">${illustration(p)}<div class="product-info"><span class="eyebrow">${escape(p.category)}</span><h3>${escape(p.name)}</h3><p>${escape(p.description)}</p><div class="product-bottom"><strong>${money(p.price_cents)}</strong><button class="add-button" data-add="${p.id}" aria-label="${escape(p.name)} in den Warenkorb"><span aria-hidden="true">+</span> Hinzufügen</button></div></div></article>`;
+  const stockText =
+    p.stock === null
+      ? "Bestand nicht erfasst"
+      : p.stock === 0
+        ? "Nicht verfügbar"
+        : `${p.stock} verfügbar`;
+  const stockDetail =
+    p.stock === null
+      ? ""
+      : p.stock_imported_at
+        ? ` · Import ${new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short" }).format(new Date(p.stock_imported_at))}`
+        : " · Stand letzter Import";
+  return `<article class="product-card">${illustration(p)}<div class="product-info"><span class="eyebrow">${escape(p.category)}</span><h3>${escape(p.name)}</h3><p>${escape(p.description)}</p><div class="stock-note ${p.stock === 0 ? "out-of-stock" : ""}">${stockText}${stockDetail}</div><div class="product-bottom"><strong>${money(p.price_cents)}</strong><button class="add-button" data-add="${p.id}" aria-label="${escape(p.name)} in den Warenkorb" ${p.stock === 0 ? "disabled" : ""}><span aria-hidden="true">+</span> Hinzufügen</button></div></div></article>`;
 }
 function filterProducts() {
   const products = state.products.filter(
@@ -206,7 +226,7 @@ function renderCart() {
           "Hier ist noch Platz.",
           "Entdecke unsere Produkte und stelle deine Auswahl zusammen.",
         )
-      : `<div class="cart-layout"><section class="cart-items" aria-label="Warenkorbpositionen">${rows.map((item) => `<article class="cart-row">${item.product ? illustration(item.product) : '<div class="unavailable-art">?</div>'}<div class="cart-product"><h3>${escape(item.product?.name || "Produkt nicht mehr verfügbar")}</h3><p class="muted">${item.product ? `${money(item.product.price_cents)} / Stück` : "Bitte aus dem Warenkorb entfernen."}</p><button class="text-button remove" data-remove="${item.productId}">Entfernen</button></div><label class="quantity">Menge<input type="number" min="1" max="99" value="${item.quantity}" data-quantity="${item.productId}" aria-label="Menge für ${escape(item.product?.name || "entferntes Produkt")}"></label><strong>${item.product ? money(item.product.price_cents * item.quantity) : "—"}</strong></article>`).join("")}</section><aside class="summary"><h2>Deine Bestellung</h2><div class="summary-line"><span>Zwischensumme</span><span>${money(total)}</span></div><div class="summary-line"><span>Versand</span><span>Kostenlos</span></div><div class="summary-line total"><span>Gesamt</span><strong>${money(total)}</strong></div>${state.user ? `<div class="shipping"><span class="eyebrow">LIEFERUNG AN</span><strong>${escape(state.user.name)}</strong><p>${escape(state.user.address)}</p><a href="#account">Adresse bearbeiten</a></div><button class="button full" id="checkout" ${rows.some((i) => !i.product) ? "disabled" : ""}>Jetzt bestellen <span aria-hidden="true">↗</span></button><p class="small muted">Übungs-Shop: Es erfolgt keine Zahlung und kein tatsächlicher Versand.</p>` : '<p class="muted">Melde dich an oder erstelle ein Konto, um zu bestellen.</p><button class="button full" data-open-auth>Anmelden & bestellen</button>'}</aside></div>`);
+      : `<div class="cart-layout"><section class="cart-items" aria-label="Warenkorbpositionen">${rows.map((item) => `<article class="cart-row">${item.product ? illustration(item.product) : '<div class="unavailable-art">?</div>'}<div class="cart-product"><h3>${escape(item.product?.name || "Produkt nicht mehr verfügbar")}</h3><p class="muted">${item.product ? `${money(item.product.price_cents)} / Stück${item.product.stock === null ? "" : ` · ${item.product.stock} verfügbar (Stand letzter Import)`}` : "Bitte aus dem Warenkorb entfernen."}</p><button class="text-button remove" data-remove="${item.productId}">Entfernen</button></div><label class="quantity">Menge<input type="number" min="1" max="99" value="${item.quantity}" data-quantity="${item.productId}" aria-label="Menge für ${escape(item.product?.name || "entferntes Produkt")}"></label><strong>${item.product ? money(item.product.price_cents * item.quantity) : "—"}</strong></article>`).join("")}</section><aside class="summary"><h2>Deine Bestellung</h2><div class="summary-line"><span>Zwischensumme</span><span>${money(total)}</span></div><div class="summary-line"><span>Versand</span><span>Kostenlos</span></div><div class="summary-line total"><span>Gesamt</span><strong>${money(total)}</strong></div>${state.user ? `<div class="shipping"><span class="eyebrow">LIEFERUNG AN</span><strong>${escape(state.user.name)}</strong><p>${escape(state.user.address)}</p><a href="#account">Adresse bearbeiten</a></div>${rows.some((i) => !i.product || (i.product.stock !== null && i.quantity > i.product.stock)) ? '<p class="form-error">Bitte Menge an den verfügbaren Bestand anpassen oder das Produkt entfernen.</p>' : ""}<button class="button full" id="checkout" ${rows.some((i) => !i.product || (i.product.stock !== null && i.quantity > i.product.stock)) ? "disabled" : ""}>Jetzt bestellen <span aria-hidden="true">↗</span></button><p class="small muted">Übungs-Shop: Es erfolgt keine Zahlung und kein tatsächlicher Versand.</p>` : '<p class="muted">Melde dich an oder erstelle ein Konto, um zu bestellen.</p><button class="button full" data-open-auth>Anmelden & bestellen</button>'}</aside></div>`);
 }
 function orderCard(order, admin = false) {
   const labels = {
@@ -246,6 +266,18 @@ function renderAccount() {
     ) +
     `<div class="account-layout"><form id="profile-form" class="panel"><h2>Persönliche Daten</h2><label>Name<input name="name" required autocomplete="name" maxlength="100" value="${escape(state.user.name)}"></label><label>E-Mail<input name="email" type="email" required autocomplete="email" maxlength="254" value="${escape(state.user.email)}"></label><label>Lieferadresse<textarea name="address" required autocomplete="street-address" maxlength="500" rows="4">${escape(state.user.address)}</textarea></label><button class="button" type="submit">Änderungen speichern</button></form><aside class="panel account-aside"><span class="eyebrow">GUT ZU WISSEN</span><h2>Deine nächste Bestellung?</h2><p class="muted">Deine Lieferadresse wird beim Bestellen übernommen. Bereits aufgegebene Bestellungen behalten die damalige Adresse.</p><a href="#orders">Meine Bestellungen ansehen ↗</a><hr><button class="text-button" id="logout">Abmelden</button></aside></div>`;
 }
+function renderImportPanel() {
+  const result = state.importResult;
+  return `<section class="panel import-panel" aria-labelledby="import-heading">
+    <div><span class="eyebrow">LAB 2 · DATEIAUSTAUSCH</span><h2 id="import-heading">Produkte aus dem ERP importieren</h2>
+    <p class="muted">Exportiere die Produktliste im Mini-ERP als Excel und wähle die Datei hier aus. Alternativ kannst du die CSV-Datei der ERP-Schnittstelle verwenden.</p>
+    <p class="small muted">Der Bestand zeigt den Stand des letzten Imports. Nicht enthaltene Produkte bleiben im Shop; Preise ohne Währungsangabe werden als Euro behandelt.</p></div>
+    <form id="import-form" enctype="multipart/form-data"><label>ERP-Produktdatei (.xlsx oder .csv, höchstens 2 MB)<input type="file" name="file" accept=".xlsx,.csv" required></label>
+    <p id="import-error" class="form-error" role="alert"></p><button class="button" type="submit">Datei importieren</button>
+    ${result ? `<p class="import-success" role="status">Import abgeschlossen: ${result.created} neu, ${result.updated} aktualisiert.</p>` : ""}</form>
+  </section>`;
+}
+
 function renderAdmin(orders) {
   main.innerHTML =
     heading(
@@ -253,7 +285,8 @@ function renderAdmin(orders) {
       "Dein Shop im Überblick.",
       "Produkte pflegen und Bestellungen bearbeiten.",
     ) +
-    `<div class="admin-layout"><section class="panel"><h2 id="product-form-heading">Produkt hinzufügen</h2><form id="product-form"><input type="hidden" name="id"><label>Produktname<input name="name" required maxlength="100"></label><label>Beschreibung<textarea name="description" required maxlength="1000" rows="3"></textarea></label><div class="form-columns"><label>Preis in €<input name="price" inputmode="decimal" required placeholder="19,90" pattern="[0-9]{1,6}([.,][0-9]{1,2})?"></label><label>Kategorie<input name="category" required maxlength="50" list="categories"><datalist id="categories"><option value="Technik"><option value="Schreibtisch"><option value="Alltag"></datalist></label></div><div class="form-actions"><button class="button" type="submit" id="product-submit">Produkt hinzufügen</button><button class="quiet" type="button" id="reset-product" hidden>Abbrechen</button></div></form></section><section class="panel"><h2>Produkte <span class="muted">(${state.products.length})</span></h2><div class="manage-products">${state.products.map((p) => `<div class="manage-row"><div><strong>${escape(p.name)}</strong><span class="muted">${money(p.price_cents)} · ${escape(p.category)}</span></div><div class="manage-actions"><button class="text-button" data-edit="${p.id}">Bearbeiten</button><button class="text-button remove" data-delete="${p.id}" aria-label="${escape(p.name)} entfernen">Entfernen</button></div></div>`).join("") || '<p class="muted">Noch keine Produkte angelegt.</p>'}</div></section></div><section class="admin-orders"><div class="section-heading"><h2>Alle Bestellungen</h2><span class="muted">${orders.length} ${orders.length === 1 ? "Bestellung" : "Bestellungen"}</span></div>${orders.length ? `<div class="order-grid">${orders.map((order) => orderCard(order, true)).join("")}</div>` : '<p class="muted">Es sind noch keine Bestellungen eingegangen.</p>'}</section>`;
+    renderImportPanel() +
+    `<div class="admin-layout"><section class="panel"><h2 id="product-form-heading">Produkt hinzufügen</h2><form id="product-form"><input type="hidden" name="id"><label>Produktname<input name="name" required maxlength="100"></label><label>Beschreibung<textarea name="description" maxlength="1000" rows="3"></textarea></label><div class="form-columns"><label>Preis in €<input name="price" inputmode="decimal" required placeholder="19,90" pattern="[0-9]{1,6}([.,][0-9]{1,2})?"></label><label>Kategorie<input name="category" required maxlength="50" list="categories"><datalist id="categories"><option value="Technik"><option value="Schreibtisch"><option value="Alltag"></datalist></label></div><div class="form-actions"><button class="button" type="submit" id="product-submit">Produkt hinzufügen</button><button class="quiet" type="button" id="reset-product" hidden>Abbrechen</button></div></form></section><section class="panel"><h2>Produkte <span class="muted">(${state.products.length})</span></h2><div class="manage-products">${state.products.map((p) => `<div class="manage-row"><div><strong>${escape(p.name)}</strong><span class="muted">${money(p.price_cents)} · ${escape(p.category)}${p.erp_id ? ` · ERP-ID: ${escape(p.erp_id)}` : ""}</span></div><div class="manage-actions"><button class="text-button" data-edit="${p.id}">Bearbeiten</button><button class="text-button remove" data-delete="${p.id}" aria-label="${escape(p.name)} entfernen">Entfernen</button></div></div>`).join("") || '<p class="muted">Noch keine Produkte angelegt.</p>'}</div></section></div><section class="admin-orders"><div class="section-heading"><h2>Alle Bestellungen</h2><span class="muted">${orders.length} ${orders.length === 1 ? "Bestellung" : "Bestellungen"}</span></div>${orders.length ? `<div class="order-grid">${orders.map((order) => orderCard(order, true)).join("")}</div>` : '<p class="muted">Es sind noch keine Bestellungen eingegangen.</p>'}</section>`;
 }
 
 async function render() {
@@ -261,8 +294,12 @@ async function render() {
   updateHeader();
   const page = location.hash.slice(1) || "products";
   try {
-    if (page === "cart") renderCart();
-    else if (page === "account") renderAccount();
+    if (page === "cart") {
+      const products = await api("/products");
+      if (version !== renderVersion) return;
+      state.products = products;
+      renderCart();
+    } else if (page === "account") renderAccount();
     else if (page === "orders" || page === "admin") {
       if (!state.user) {
         main.innerHTML =
@@ -418,6 +455,7 @@ document.addEventListener("click", async (event) => {
     } else if (target.id === "logout") {
       await api("/logout", { method: "POST", body: {} });
       state.user = null;
+      state.importResult = null;
       state.cart = [];
       saveCart();
       Object.assign(state, await api("/session"));
@@ -509,13 +547,26 @@ document.addEventListener("change", async (event) => {
 document.addEventListener("submit", async (event) => {
   const form = event.target;
   const formId = form.getAttribute("id");
-  if (!["profile-form", "product-form"].includes(formId)) return;
+  if (!["profile-form", "product-form", "import-form"].includes(formId)) return;
   event.preventDefault();
   const button = form.querySelector('button[type="submit"]');
   button.disabled = true;
-  const data = Object.fromEntries(new FormData(form));
+  const formData = new FormData(form);
+  const data =
+    formId === "import-form" ? formData : Object.fromEntries(formData);
   try {
-    if (formId === "profile-form") {
+    if (formId === "import-form") {
+      form.querySelector("#import-error").textContent = "";
+      form.querySelector(".import-success")?.remove();
+      state.importResult = null;
+      state.importResult = await api("/admin/import/products", {
+        method: "POST",
+        body: data,
+      });
+      state.products = await api("/products");
+      await render();
+      notify("Produktdatei erfolgreich importiert.");
+    } else if (formId === "profile-form") {
       const result = await api("/profile", { method: "PATCH", body: data });
       state.user = result.user;
       await render();
@@ -530,7 +581,9 @@ document.addEventListener("submit", async (event) => {
       notify("Produkt gespeichert.");
     }
   } catch (error) {
-    notify(error.message, true);
+    if (formId === "import-form")
+      form.querySelector("#import-error").textContent = error.message;
+    else notify(error.message, true);
   } finally {
     button.disabled = false;
   }

@@ -37,6 +37,12 @@ export class LocalOrderService {
             409,
             "Ein Produkt ist nicht mehr verfügbar. Bitte den Warenkorb aktualisieren.",
           );
+        // Lab 2 prüft eine Momentaufnahme; eine Reservierung im ERP gibt es noch nicht.
+        if (product.stock !== null && item.quantity > product.stock)
+          fail(
+            409,
+            `Für „${product.name}“ reicht der Bestand laut letztem Import nicht aus.`,
+          );
         return { product, quantity: item.quantity };
       });
       // Preise und Gesamtbetrag werden ausschließlich anhand der Datenbank berechnet.

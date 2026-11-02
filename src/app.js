@@ -4,8 +4,10 @@ import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
+import multer from "multer";
 import { openDatabase, SQLiteSessionStore } from "./database.js";
 import { LocalOrderService } from "./order-service.js";
+import { importProducts } from "./product-import.js";
 import {
   fail,
   text,
@@ -47,7 +49,9 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
   app.use("/api", (req, res, next) => {
     res.set("Cache-Control", "no-store");
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
-      if (!req.is("application/json"))
+      const isImport =
+        req.path === "/admin/import/products" && req.is("multipart/form-data");
+      if (!isImport && !req.is("application/json"))
         return next(
           Object.assign(new Error("Bitte JSON senden."), { status: 415 }),
         );
@@ -63,9 +67,8 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
         );
       }
       if (
-        !req.body ||
-        typeof req.body !== "object" ||
-        Array.isArray(req.body)
+        !isImport &&
+        (!req.body || typeof req.body !== "object" || Array.isArray(req.body))
       ) {
         return next(
           Object.assign(new Error("Bitte ein JSON-Objekt senden."), {
@@ -189,14 +192,19 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
     res.json(
       db
         .prepare(
-          "SELECT id, erp_id, name, description, price_cents, category FROM products WHERE active=1 ORDER BY id",
+          "SELECT id, erp_id, name, description, price_cents, category, stock, stock_imported_at FROM products WHERE active=1 ORDER BY id",
         )
         .all(),
     );
   });
   function productValues(body) {
     const name = text(body.name, "Produktname", 100);
-    const description = text(body.description, "Beschreibung", 1000);
+    if (
+      typeof body.description !== "string" ||
+      body.description.trim().length > 1000
+    )
+      fail(400, "Beschreibung: Bitte höchstens 1000 Zeichen eingeben.");
+    const description = body.description.trim();
     const category = text(body.category, "Kategorie", 50);
     const raw =
       typeof body.price === "string" ? body.price.trim().replace(",", ".") : "";
@@ -243,6 +251,34 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
     if (!result.changes) fail(404, "Produkt nicht gefunden.");
     res.json({ ok: true });
   });
+  // Upload bleibt auf die Verwaltung beschränkt; Dateien werden nur im Speicher verarbeitet.
+  const upload = multer({
+    storage: multer.memoryStorage(),
+    limits: { fileSize: 2 * 1024 * 1024, files: 1, fields: 0 },
+  }).single("file");
+  app.post(
+    "/api/admin/import/products",
+    requireAdmin,
+    (req, res, next) => {
+      upload(req, res, (error) => {
+        if (!error) return next();
+        const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
+        next(
+          Object.assign(
+            new Error(
+              status === 413
+                ? "Die Datei darf höchstens 2 MB groß sein."
+                : "Der Datei-Upload ist ungültig. Bitte genau eine Datei auswählen.",
+            ),
+            { status },
+          ),
+        );
+      });
+    },
+    async (req, res) => {
+      res.json(await importProducts(db, req.file));
+    },
+  );
   app.post("/api/orders", requireLogin, (req, res) => {
     res.status(201).json(orderService.placeOrder(req.user, req.body.items));
   });
@@ -269,14 +305,10 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
     if (res.headersSent) return next(error);
     const status = error.status || 500;
     if (status >= 500) console.error(error);
-    res
-      .status(status)
-      .json({
-        error:
-          status >= 500
-            ? "Ein interner Fehler ist aufgetreten."
-            : error.message,
-      });
+    res.status(status).json({
+      error:
+        status >= 500 ? "Ein interner Fehler ist aufgetreten." : error.message,
+    });
   });
   return { app, db, adminCreated };
 }

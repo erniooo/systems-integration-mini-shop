@@ -40,6 +40,11 @@ export async function openDatabase(path, adminPassword) {
       product_id INTEGER NOT NULL REFERENCES products(id), product_name TEXT NOT NULL,
       unit_price_cents INTEGER NOT NULL, quantity INTEGER NOT NULL CHECK(quantity > 0)
     );
+    CREATE TABLE IF NOT EXISTS erp_checkouts (
+      request_id TEXT PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id),
+      cart TEXT NOT NULL, customer_name TEXT NOT NULL, customer_email TEXT NOT NULL,
+      shipping_address TEXT NOT NULL
+    );
     CREATE TABLE IF NOT EXISTS sessions (sid TEXT PRIMARY KEY, data TEXT NOT NULL, expires INTEGER NOT NULL);
     CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
   `);

@@ -105,40 +105,56 @@ ist mit `npm start` ohne weitere Konfiguration im Arbeitsspeicher.
 
 ## Lab 3: Live-Bestand und Bestellungen im ERP
 
-Starte das angepasste Mini-ERP und den Shop in zwei Terminals. Im ERP-Ordner
-legst du einmalig eine separate SQLite-Datei für Lab 3 mit den Beispieldaten an:
+Verwende das originale Mini-ERP aus dem [Kurs-Repository](https://codeberg.org/ceedee666/systems-integration).
+Wenn du beide Projekte bereits hast, genügt `git pull` im **Shop-Ordner**.
+Starte danach beide Prozesse auf demselben Rechner in zwei Terminals.
+
+1. Im Kurs-Repository in `src/simple-erp`: beim ersten Mal `npm ci`, dann
+   `npm start`. Das ERP startet auf Port 4004 und lädt Beispieldaten in den
+   Arbeitsspeicher. Bei einem ERP-Neustart werden diese Daten zurückgesetzt.
+2. Im Shop-Ordner: beim ersten Mal `npm ci`, dann `npm start`. Den Shop unter
+   `http://localhost:3000` öffnen.
+
+Der Shop verwendet standardmäßig `http://127.0.0.1:4004` und das mitgelieferte
+Übungskonto `service-user` / `service-user`. Bei einem anderen Port, Rechner
+oder ERP-Konto kannst du beim Shop-Start `ERP_URL`, `ERP_USER` und
+`ERP_PASSWORD` setzen. `127.0.0.1` bezeichnet den Rechner des Shop-Prozesses.
+
+Bei einem Verbindungsproblem kannst du das ERP direkt aus dem Shop-Terminal
+prüfen (unter Windows gegebenenfalls `curl.exe` verwenden):
 
 ```bash
-export CDS_CONFIG='{"requires":{"db":{"credentials":{"url":"lab3.sqlite"},"data":["db/data","test/data"]}}}'
-[ -f lab3.sqlite ] || npx --no-install cds deploy
-npm start
+curl -i -u service-user:service-user http://127.0.0.1:4004/rest/api/products
+curl -i -u service-user:service-user http://127.0.0.1:4004/odata/v4/simple-erp/Orders
 ```
 
-Führe bei jedem ERP-Start in einem neuen Terminal auch den `export` aus.
-`lab3.sqlite` speichert Bestände und Bestellungen über Neustarts hinweg.
-Starte den Shop wie gewohnt mit `npm start`. Er nutzt lokal
-`http://127.0.0.1:4004` und das Übungskonto `service-user` / `service-user`.
-Bei Bedarf lassen sich `ERP_URL`, `ERP_USER` und `ERP_PASSWORD` setzen.
+Beide Endpunkte sollen HTTP 200 liefern. Bei „Failed to connect“ prüfe den
+ERP-Prozess und Port 4004. Bei HTTP 401 oder 403 prüfe das verwendete Konto
+und die Rolle `system-integration`.
 
 1. Öffne oder lade die Produktübersicht neu. Der Shop liest die ERP-Produkte
    gebündelt über `GET /rest/api/products` und übernimmt neue Euro-Produkte
    automatisch anhand ihrer Produkt-ID. Bestehende Shop-Namen, Preise und
    Kategorien bleiben bestehen. Der Dateiimport kann sie weiterhin aktualisieren.
-2. Bestelle als angemeldeter Kunde. `POST /rest/api/placeShopOrder` prüft die
-   Menge im ERP, bucht den Bestand und legt die Bestellung in einer
-   Datenbanktransaktion an. Die Oberfläche zeigt die ERP-Bestellnummer.
+2. Bestelle als angemeldeter Kunde. Der Shop ordnet die ERP-Produkt-IDs den
+   internen UUIDs zu und prüft den aktuellen Bestand. Er nutzt die vorhandenen
+   OData-Endpunkte `Customers` und `Orders` unter `/odata/v4/simple-erp`.
+   `POST /odata/v4/simple-erp/Orders` lässt das ERP erneut prüfen, den Bestand
+   buchen und die Bestellung anlegen. Die Oberfläche zeigt die vom ERP
+   vergebene Bestellnummer.
 3. Unter **Bestellungen** erscheint die Bestellung mit ihrem Status aus dem
-   ERP. Für ERP-Bestellungen werden Statusänderungen dort vorgenommen. Lokale
-   Altbestellungen bleiben mit ihrer ursprünglichen Nummer in der Historie.
+   ERP. Der Shop speichert die Zuordnung zum lokalen Konto und die
+   Lieferadresse des Kaufversuchs. Für ERP-Bestellungen werden Statusänderungen
+   im ERP vorgenommen. Lokale Bestellungen aus Lab 1 und 2 bleiben in der Historie.
 
 Der Shop führt im Lab-3-Modus keinen eigenen Bestand und legt neue
 Bestellungen ausschließlich im ERP an. Kann das ERP nicht erreicht werden,
 bleibt die Produktansicht verfügbar und kennzeichnet den unbekannten Bestand
 entsprechend. Bei Verbindungsfehlern, Timeouts und vorübergehenden Serverfehlern
-versucht der Shop die Anfrage bis zu zweimal erneut. Jeder Versuch derselben
-Bestellung sendet dieselbe UUID, sodass ein verlorener Antwortdatensatz keine
-zweite Bestellung auslöst. Im Warenkorb kann die Bestätigung für dieselbe
-Auswahl erneut abgefragt werden.
+versucht der Shop die Anfrage bis zu zweimal erneut. Bei einer unklaren
+Bestellantwort fragt er die Bestellung anhand derselben UUID ab. Ist sie schon
+gespeichert, kann der Shop ihre Bestellnummer übernehmen. Im Warenkorb kann
+die Bestätigung für dieselbe Auswahl erneut abgefragt werden.
 
 Ein Bestandsabruf pro Katalogaufruf vermeidet eine Anfrage je Produkt. Bestände
 werden nicht zwischengespeichert. Der Checkout prüft im ERP erneut,
@@ -200,8 +216,9 @@ Migration die Felder in einer bestehenden Lab-1-Datenbank.
 
 **Bestellungen (`orders`)** gehören zu einem Kunden und enthalten Gesamtbetrag,
 Status, Bestellzeitpunkt sowie Name, E-Mail und Lieferadresse zum Zeitpunkt der
-Bestellung. `integration_status = local` und `erp_order_id` sind Vorbereitung
-für spätere Labs; ERP-Kommunikation ist noch nicht implementiert.
+Bestellung. Das betrifft lokale Bestellungen in Lab 1 und Lab 2. In Lab 3 liegen
+Bestellungen im ERP. `erp_checkouts` ordnet die ERP-Bestell-UUID einem lokalen
+Kaufversuch zu und speichert die Kontaktdaten für die Anzeige im Shop.
 
 **Positionen (`order_items`)** speichern Menge, Produktreferenz sowie Produktname
 und Einzelpreis zum Kaufzeitpunkt. Spätere Preis- oder Profiländerungen ändern

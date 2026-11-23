@@ -211,11 +211,13 @@ export async function createApp({ dbPath, sessionSecret, adminPassword, erp, dem
 
   app.get("/api/products", async (req, res) => {
     let stock;
+    let stockError;
     if (erp) {
       try {
         stock = refreshErpCatalog(db, await erp.products());
       } catch (error) {
         if (![502, 503].includes(error.status)) throw error;
+        stockError = error;
       }
     }
     const fields = erp ? "" : ", stock, stock_imported_at";
@@ -234,6 +236,7 @@ export async function createApp({ dbPath, sessionSecret, adminPassword, erp, dem
     const visible = req.query.view === "catalog"
       ? withStock.filter((p) => p.stock > 0 || p.stock_source === "unavailable")
       : withStock;
+    if (req.query.view === "catalog" && !visible.length && stockError) throw stockError;
     res.json(visible);
   });
   app.get("/api/products/:id/photo", (req, res) => {

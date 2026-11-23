@@ -1,33 +1,8 @@
 import { setTimeout as delay } from "node:timers/promises";
 import { fail } from "./security.js";
 
-const statuses = {
-  NEW: "pending",
-  PICKED: "picked",
-  SHIPPED: "shipped",
-  COMPLETED: "completed",
-  CANCELED: "canceled",
-};
-
-function shopOrder(order) {
-  if (!Number.isSafeInteger(order?.orderID) || !Array.isArray(order.items))
-    fail(502, "Das ERP hat keine gültige Bestellbestätigung geliefert.");
-  return {
-    id: order.orderID,
-    source: "erp",
-    created_at: order.createdAt,
-    status: statuses[order.status] || "pending",
-    customer_name: order.customerName,
-    customer_email: order.customerEmail,
-    shipping_address: order.shippingAddress,
-    total_cents: Number(order.totalCents),
-    items: order.items.map((item) => ({
-      product_name: item.productName,
-      unit_price_cents: item.unitPriceCents,
-      quantity: item.quantity,
-    })),
-  };
-}
+const service = "/odata/v4/simple-erp";
+const expandItems = "$expand=items($expand=product($select=name))";
 
 export function createErpClient({ url, username, password, timeout = 1800 }) {
   const base = new URL(url);
@@ -35,65 +10,91 @@ export function createErpClient({ url, username, password, timeout = 1800 }) {
     throw new Error("ERP_URL muss eine HTTP(S)-Adresse ohne Zugangsdaten sein.");
   const authorization = "Basic " + Buffer.from(`${username}:${password}`).toString("base64");
 
-  async function request(path, body) {
-    // Eine Bestellung kann sicher erneut gesendet werden, da alle Versuche
-    // dieselbe Kennung im ERP verwenden.
-    for (let attempt = 0; attempt < 3; attempt++) {
-      if (attempt) await delay(150 * attempt);
-      let response;
-      try {
-        response = await fetch(new URL(path, base), {
-          headers: {
-            Authorization: authorization,
-            Accept: "application/json",
-            ...(body ? { "Content-Type": "application/json" } : {}),
-          },
-          method: body ? "POST" : "GET",
-          body: body ? JSON.stringify(body) : undefined,
-          redirect: "error",
-          signal: AbortSignal.timeout(timeout),
-        });
-      } catch {
-        continue;
-      }
-      if (response.ok) {
-        try {
-          return await response.json();
-        } catch {
-          continue;
-        }
-      }
-      const failure = await response.json().catch(() => null);
-      if (response.status === 409)
-        fail(409, failure?.error?.message === "This checkout ID belongs to another order."
-          ? "Diese Kennung gehört bereits zu einer anderen Bestellung."
-          : "Mindestens ein Produkt ist im ERP nicht in der gewünschten Menge verfügbar.");
-      if ([400, 422].includes(response.status))
-        fail(422, "Das ERP konnte die Bestelldaten nicht verarbeiten.");
-      if (response.status < 500 && ![408, 429].includes(response.status))
-        fail(503, "Verbindung zum ERP fehlgeschlagen. Bitte die ERP-Konfiguration prüfen.");
+  async function request(path, { body, allowMissing = false } = {}) {
+    let response;
+    try {
+      response = await fetch(new URL(path, base), {
+        headers: {
+          Authorization: authorization,
+          Accept: "application/json",
+          ...(body ? { "Content-Type": "application/json" } : {}),
+        },
+        method: body ? "POST" : "GET",
+        body: body ? JSON.stringify(body) : undefined,
+        redirect: "error",
+        signal: AbortSignal.timeout(timeout),
+      });
+    } catch {
+      fail(503, "Das ERP ist vorübergehend nicht erreichbar. Bitte erneut versuchen.");
     }
-    fail(503, body
-      ? "Das ERP hat die Bestellung noch nicht bestätigt. Bitte denselben Kauf erneut versuchen."
-      : "Das ERP ist vorübergehend nicht erreichbar. Bitte erneut versuchen.");
+    if (response.ok)
+      return response.json().catch(() => fail(502, "Das ERP hat keine gültige Antwort geliefert."));
+    if (allowMissing && response.status === 404) return null;
+    if (response.status === 409)
+      fail(409, "Das ERP hat die Anfrage wegen eines Konflikts abgelehnt. Bitte den Bestand prüfen.");
+    if ([400, 422].includes(response.status))
+      fail(422, "Das ERP konnte die gesendeten Daten nicht verarbeiten.");
+    if ([401, 403].includes(response.status))
+      fail(503, "ERP-Zugriff verweigert. Bitte ERP-Zugangsdaten und Berechtigungen prüfen.");
+    fail(503, "Das ERP hat die Anfrage nicht bestätigt. Bitte erneut versuchen.");
+  }
+
+  async function read(path, allowMissing = false) {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await request(path, { allowMissing });
+      } catch (error) {
+        if (attempt === 2 || ![502, 503].includes(error.status)) throw error;
+        await delay(150 * (attempt + 1));
+      }
+    }
+  }
+
+  async function create(collection, record, find) {
+    // Die UUID bleibt gleich. Nach einer unklaren Antwort zuerst lesen, ob
+    // das ERP den Datensatz bereits gespeichert hat.
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await request(`${service}/${collection}`, { body: record });
+      } catch (error) {
+        if (![409, 502, 503].includes(error.status)) throw error;
+        const existing = await find();
+        if (existing) return existing;
+        if (attempt === 2 || error.status === 409) throw error;
+        await delay(150 * (attempt + 1));
+      }
+    }
+  }
+
+  function findOrder(id) {
+    return read(`${service}/Orders(${id})?${expandItems}`, true);
   }
 
   return {
     async products() {
-      const products = await request("/rest/api/products");
+      const products = await read("/rest/api/products");
       if (!Array.isArray(products))
         fail(502, "Das ERP hat keine gültige Produktliste geliefert.");
       return products;
     },
-    async placeOrder(data) {
-      return shopOrder(await request("/rest/api/placeShopOrder", data));
+    findOrder,
+    async ensureCustomer(customer) {
+      const find = () => read(`${service}/Customers(${customer.ID})`, true);
+      return (await find()) ?? create("Customers", customer, find);
     },
-    async listOrders(buyer) {
-      const query = buyer ? `?buyer=${encodeURIComponent(buyer)}` : "";
-      const orders = await request(`/rest/api/shopOrders${query}`);
-      if (!Array.isArray(orders))
-        fail(502, "Das ERP hat keine gültige Bestellübersicht geliefert.");
-      return orders.map(shopOrder);
+    createOrder(order) {
+      return create("Orders", order, () => findOrder(order.ID));
+    },
+    async listOrders(ids) {
+      const orders = [];
+      for (let offset = 0; offset < ids.length; offset += 40) {
+        const filter = encodeURIComponent(`ID in (${ids.slice(offset, offset + 40).join(",")})`);
+        const result = await read(`${service}/Orders?${expandItems}&$filter=${filter}`);
+        if (!Array.isArray(result?.value))
+          fail(502, "Das ERP hat keine gültige Bestellübersicht geliefert.");
+        orders.push(...result.value);
+      }
+      return orders;
     },
   };
 }

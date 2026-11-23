@@ -1,4 +1,4 @@
-# Mini-Shop – Systems Integration, Labs 1 und 2
+# Mini-Shop – Systems Integration, Labs 1 bis 3
 
 Ein lokaler Webshop mit JavaScript, Node.js, Express, SQLite und einer einfachen
 HTML/CSS-Oberfläche. Die Anwendung enthält Beispielprodukte und benötigt keinen
@@ -16,43 +16,33 @@ npm start
 ```
 
 Dann **http://localhost:3000** öffnen. Der Server läuft ausschließlich auf dem
-lokalen Rechner. Mit `Strg+C` beenden. Für die Entwicklung startet `npm run dev`
+lokalen Rechner. Für Live-Bestände und Checkout muss auch das Mini-ERP laufen
+(siehe Lab 3). Mit `SHOP_MODE=lab2 npm start` lässt sich der Dateiimport mit
+lokalem Bestand und lokalen Bestellungen wie in Lab 2 ausprobieren.
+Mit `Strg+C` beenden. Für die Entwicklung startet `npm run dev`
 den Server bei Änderungen an den Serverdateien neu. Änderungen an HTML, CSS und
 Browser-JavaScript werden nach Neuladen der Seite sichtbar.
 
-Beim allerersten Start wird ein Verwaltungskonto angelegt:
-
-- E-Mail: `admin@minishop.local`
-- Passwort: wird zufällig erzeugt und **einmal im Terminal angezeigt**. Aufbewahren!
-
-Alternativ kann das erste Passwort selbst festgelegt werden:
-
-```bash
-ADMIN_PASSWORD='DeinEigenesPasswort2026' npm start
-```
-
-`ADMIN_PASSWORD` legt nur ein noch nicht vorhandenes Verwaltungskonto an und
-ändert kein bestehendes Passwort. Normale Kundenkonten entstehen über
-**Anmelden → Neu hier? Konto erstellen**. Die Rolle kann nicht über die
-Registrierung ausgewählt werden. Auch das Verwaltungskonto kann Testbestellungen
-aufgeben.
+Unter **Anmelden** führt **Nutzer-Login** direkt zur Produktübersicht.
+**Admin-Login** öffnet die Verwaltung. Beide verwenden vorhandene
+Konten in der lokalen Shop-Datenbank. **Mein Konto → Konto wechseln**
+öffnet die Auswahl erneut. Dieser Demo-Login ist für localhost vorgesehen.
 
 ## Was funktioniert?
 
 - Produktübersicht mit Name, Beschreibung, Preis, Suche und Kategorien.
 - Produkte hinzufügen, bearbeiten und entfernen, ausschließlich als Verwaltung.
-- Kundenregistrierung, Anmeldung, Abmeldung und Bearbeitung von Name, E-Mail und Adresse.
+- Demo-Login als Nutzer oder Admin, Kontowechsel und Bearbeitung der Profildaten.
 - Warenkorb mit Mengenänderung und Entfernen von Positionen.
 - Bestellen als angemeldeter Kunde mit gespeicherter Lieferadresse.
 - Persönliche Kaufhistorie mit Positionen, Mengen, Gesamtbetrag und Bestellstatus.
 - Verwaltung aller Bestellungen mit den Statuswerten `pending`, `shipped`, `completed`.
 - Dauerhafte SQLite-Daten und Sitzungen, auch nach einem Neustart.
 - ERP-Produkte aus Excel- oder CSV-Dateien importieren und aktualisieren.
-- Den zuletzt importierten Bestand auf Produktkarten und im Warenkorb anzeigen.
+- Bestand online beim ERP abfragen und Bestellungen dort anlegen.
 
 Es handelt sich um einen Übungs-Shop. Checkout erzeugt eine Bestellung; es gibt
-keine Zahlungsabwicklung und keinen tatsächlichen Versand. Die Bestände von
-ERP-Produkten entsprechen dem letzten Dateiimport und sind nicht live.
+keine Zahlungsabwicklung und keinen tatsächlichen Versand.
 
 ## Lab 2: Produkte aus dem Mini-ERP übernehmen
 
@@ -98,22 +88,72 @@ Preise oder Bestände und beschädigte Dateien führen zu einer Fehlermeldung. E
 wird dann **keine Zeile** der Datei übernommen.
 
 Die in `erp_id` gespeicherte Produkt-ID (`productID`) ist die lesbare Kennung aus
-dem Datei-Export. Das ERP hat zusätzlich eine interne UUID (`ID`), die für die
-direkte Auftragsanbindung in Lab 3 relevant ist. Diese UUID muss dann über das
-ERP zur Produkt-ID ermittelt werden; sie ist im Standardexport nicht enthalten.
+dem Datei-Export. Für Bestellungen ordnet das ERP diese Kennung intern seiner
+Produkt-UUID zu.
 
 Die CSV-Funktion des bereitgestellten ERP setzt Felder direkt mit Kommas
 zusammen. Enthält ein nicht maskiertes Feld selbst ein Komma, kann diese Ausgabe
 mehrdeutig oder ungültig sein; der Import lehnt solche fehlerhaften Zeilen ab.
 In diesem Fall den Excel-Export verwenden.
 
-Der importierte Bestand ist eine **Momentaufnahme**, keine Live-Abfrage: Der
+Im Lab-2-Modus ist der importierte Bestand eine **Momentaufnahme**: Der
 Shop lehnt zwar eine Bestellung ab, deren Menge den letzten importierten
 Bestand überschreitet, reserviert oder reduziert aber keinen Bestand im ERP.
 Auch mehrere aufeinanderfolgende Bestellungen ändern die Momentaufnahme nicht.
 Erst in Lab 3 wird der Bestand live beim ERP abgefragt. Die lokale ERP-Datenbank
-ist standardmäßig im Arbeitsspeicher; Produktänderungen im ERP gehen beim
-Neustart verloren.
+ist mit `npm start` ohne weitere Konfiguration im Arbeitsspeicher.
+
+## Lab 3: Live-Bestand und Bestellungen im ERP
+
+Starte das angepasste Mini-ERP und den Shop in zwei Terminals. Im ERP-Ordner
+legst du einmalig eine separate SQLite-Datei für Lab 3 mit den Beispieldaten an:
+
+```bash
+export CDS_CONFIG='{"requires":{"db":{"credentials":{"url":"lab3.sqlite"},"data":["db/data","test/data"]}}}'
+[ -f lab3.sqlite ] || npx --no-install cds deploy
+npm start
+```
+
+Führe bei jedem ERP-Start in einem neuen Terminal auch den `export` aus.
+`lab3.sqlite` speichert Bestände und Bestellungen über Neustarts hinweg.
+Starte den Shop wie gewohnt mit `npm start`. Er nutzt lokal
+`http://127.0.0.1:4004` und das Übungskonto `service-user` / `service-user`.
+Bei Bedarf lassen sich `ERP_URL`, `ERP_USER` und `ERP_PASSWORD` setzen.
+
+1. Öffne oder lade die Produktübersicht neu. Der Shop liest die ERP-Produkte
+   gebündelt über `GET /rest/api/products` und übernimmt neue Euro-Produkte
+   automatisch anhand ihrer Produkt-ID. Bestehende Shop-Namen, Preise und
+   Kategorien bleiben bestehen. Der Dateiimport kann sie weiterhin aktualisieren.
+2. Bestelle als angemeldeter Kunde. `POST /rest/api/placeShopOrder` prüft die
+   Menge im ERP, bucht den Bestand und legt die Bestellung in einer
+   Datenbanktransaktion an. Die Oberfläche zeigt die ERP-Bestellnummer.
+3. Unter **Bestellungen** erscheint die Bestellung mit ihrem Status aus dem
+   ERP. Für ERP-Bestellungen werden Statusänderungen dort vorgenommen. Lokale
+   Altbestellungen bleiben mit ihrer ursprünglichen Nummer in der Historie.
+
+Der Shop führt im Lab-3-Modus keinen eigenen Bestand und legt neue
+Bestellungen ausschließlich im ERP an. Kann das ERP nicht erreicht werden,
+bleibt die Produktansicht verfügbar und kennzeichnet den unbekannten Bestand
+entsprechend. Bei Verbindungsfehlern, Timeouts und vorübergehenden Serverfehlern
+versucht der Shop die Anfrage bis zu zweimal erneut. Jeder Versuch derselben
+Bestellung sendet dieselbe UUID, sodass ein verlorener Antwortdatensatz keine
+zweite Bestellung auslöst. Im Warenkorb kann die Bestätigung für dieselbe
+Auswahl erneut abgefragt werden.
+
+Ein Bestandsabruf pro Katalogaufruf vermeidet eine Anfrage je Produkt. Bestände
+werden nicht zwischengespeichert. Der Checkout prüft im ERP erneut,
+weil sich der Bestand seit der Anzeige geändert haben kann.
+
+Der öffentliche Katalog blendet Produkte ohne ERP-Zuordnung, fehlende Artikel
+und Artikel mit Bestand null Stück aus. In der Verwaltung bleiben sie sichtbar.
+Ist das ERP vorübergehend nicht erreichbar, kennzeichnet der Shop den Bestand
+der zugeordneten Produkte als unbekannt.
+
+Das Mini-ERP führt kein Bildfeld. In der Shop-Verwaltung kannst du über
+**Bearbeiten → Produktfoto** ein Foto des konkreten Artikels hochladen.
+Der Shop akzeptiert JPEG, PNG und WebP bis 5 MB und speichert das Bild in der
+Shop-Datenbank. Im Katalog und im Warenkorb erscheint das zugeordnete Foto.
+Artikel ohne eigenes Foto zeigen einen neutralen Platzhalter.
 
 ## Aufbau und Lesereihenfolge
 
@@ -126,7 +166,8 @@ src/
   server.js           Start, Konfiguration und erste Administrator-Anlage
   app.js              HTTP-API, Anmeldung, Rechte und Eingabeprüfung
   database.js         SQLite-Schema, Beispielprodukte und Sitzungsspeicher
-  order-service.js    Bestelllogik und Datenbanktransaktion
+  order-service.js    Bestelllogik, Zuordnung von Shop-Kunden zum ERP
+  erp-client.js       ERP-Aufrufe mit Zeitlimit und Wiederholungen
   product-import.js   Excel-/CSV-Datei lesen, prüfen und Produkte abgleichen
   security.js         Passwort-Hashing und Validierungsfunktionen
 test/
@@ -186,6 +227,7 @@ sind für den kleinen Übungs-Shop ausreichend.
 | GET            | `/api/session`               | Angemeldeter Benutzer und CSRF-Token     |
 | POST           | `/api/register`              | Kundenkonto anlegen und anmelden         |
 | POST           | `/api/login`                 | Anmelden                                 |
+| POST           | `/api/demo-login`            | Lokal als Nutzer oder Admin anmelden     |
 | POST           | `/api/logout`                | Abmelden                                 |
 | PATCH          | `/api/profile`               | Eigene Kundendaten ändern                |
 | GET            | `/api/products`              | Aktive Produkte anzeigen                 |
@@ -194,16 +236,22 @@ sind für den kleinen Übungs-Shop ausreichend.
 | GET            | `/api/orders`                | Eigene Bestellungen anzeigen             |
 | POST           | `/api/orders`                | Bestellung anlegen                       |
 | GET            | `/api/admin/orders`          | Verwaltung: alle Bestellungen            |
-| PATCH          | `/api/admin/orders/:id`      | Verwaltung: Bestellstatus ändern         |
+| PATCH          | `/api/admin/orders/:id`      | Verwaltung: Status einer Altbestellung ändern |
 | POST           | `/api/admin/import/products` | Verwaltung: Excel-/CSV-Datei importieren |
+| GET            | `/api/products/:id/photo`     | Zugeordnetes Produktfoto abrufen         |
+| POST / DELETE  | `/api/products/:id/photo`     | Verwaltung: Foto hochladen oder entfernen |
 
 Schreibende Aufrufe erwarten das Sitzungscookie und den Header `X-CSRF-Token`
-mit dem Wert aus `/api/session`. Sie verwenden JSON; der Dateiimport verwendet
-`multipart/form-data` mit einem Dateifeld namens `file`. Beispiel für den Inhalt
+mit dem Wert aus `/api/session`. Sie verwenden JSON. Der Dateiimport und der
+Foto-Upload verwenden `multipart/form-data` mit einem Dateifeld namens `file`.
+Beispiel für den Inhalt
 einer Bestellung:
 
 ```json
-{ "items": [{ "productId": 1, "quantity": 2 }] }
+{
+  "requestID": "d2176831-aa10-4816-9534-8ea353626416",
+  "items": [{ "productId": 1, "quantity": 2 }]
+}
 ```
 
 Produkte anlegen/ändern: `name`, `description`, `category`, `price` senden.
@@ -225,36 +273,29 @@ fehlerhafte Dateien, Zugriffsrechte und die Migration einer Lab-1-Datenbank.
 
 Zum Ausprobieren im Browser:
 
-1. Neues Kundenkonto anlegen, zwei Produkte in den Warenkorb legen und Mengen ändern.
+1. Mit **Nutzer-Login** anmelden, zwei ERP-Produkte in den Warenkorb legen und Mengen ändern.
 2. Bestellen und die Bestellung in „Bestellungen“ ansehen.
-3. Unter „Mein Konto“ die Adresse ändern. Die alte Bestellung behält ihre Adresse.
+3. Unter „Mein Konto“ die Adresse ändern. Die Bestellung behält ihre Lieferadresse.
 4. Abmelden, mit dem Verwaltungskonto anmelden und einen Preis ändern.
-5. Bestellstatus auf „Versendet“ setzen und ein Produkt entfernen.
+5. Den Status der ERP-Bestellung in der Auftragsverwaltung des Mini-ERP ändern.
 6. Als Kunde wieder anmelden: Bestellung und damaliger Kaufpreis bleiben erhalten.
 
 ## Erweiterung in den nächsten Labs
 
-- **Lab 2:** Dateiimport ergänzt und aktualisiert Produkte anhand der ERP-Produkt-ID.
-- **Lab 3:** Einen ERP-Client ergänzen. Bestände live aus dem ERP lesen und
-  `placeOrder()` an die ERP-Auftragserstellung anbinden. Lokale Bestellübersichten
-  müssen dann die führenden ERP-Daten berücksichtigen.
 - **Lab 4–6:** Je nach Kurs SAP Integration Suite oder Karavan/RabbitMQ anbinden.
   Bei asynchronem Versand `integration_status` z. B. um `submitting`, `confirmed`
   und `failed` erweitern. Anfragen und Antworten mit einer Korrelations-ID verbinden.
   Vor Wiederholungsversuchen klären, wie doppelte ERP-Bestellungen vermieden werden.
-
-Labs 1 und 2 sind umgesetzt. Die Bestellservice-Grenze erleichtert spätere
-Erweiterungen.
 
 ## Lokale Konfiguration und Daten
 
 - `PORT`: Standard `3000`; alternativ z. B. `PORT=3001 npm start`.
 - `DB_PATH`: Optional ein anderer SQLite-Dateipfad.
 - `SESSION_SECRET`: Optional ein eigenes Geheimnis statt der erzeugten Datei.
-- `ADMIN_PASSWORD`: Passwort bei der erstmaligen Administrator-Anlage.
 
-Kundendaten und Bestellungen liegen in `data/shop.sqlite`; den Warenkorb hält
-der Browser in `localStorage`. Beim Abmelden wird der Warenkorb geleert.
+Shop-Konten, Katalog, Sitzungen und lokale Altbestellungen liegen in
+`data/shop.sqlite`. Die Lab-3-Bestellungen liegen im Mini-ERP. Den Warenkorb
+hält der Browser in `localStorage`. Beim Abmelden wird der Warenkorb geleert.
 Für einen sauberen Projekttransfer `node_modules/` und `data/` weglassen und am
 Ziel `npm ci` ausführen. `package-lock.json` legt die installierten Versionen fest.
 Die lokale HTTP-Konfiguration ist für das Praktikum auf dem eigenen Rechner

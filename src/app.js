@@ -5,9 +5,11 @@ import { rateLimit } from "express-rate-limit";
 import { randomBytes } from "node:crypto";
 import { fileURLToPath } from "node:url";
 import multer from "multer";
-import { openDatabase, SQLiteSessionStore } from "./database.js";
-import { LocalOrderService } from "./order-service.js";
+import { ensureDemoCustomer, openDatabase, SQLiteSessionStore } from "./database.js";
+import { ErpOrderService, LocalOrderService } from "./order-service.js";
 import { importProducts } from "./product-import.js";
+import { readProductPhoto } from "./product-photos.js";
+import { refreshErpCatalog } from "./erp-catalog.js";
 import {
   fail,
   text,
@@ -17,15 +19,18 @@ import {
   verifyPassword,
 } from "./security.js";
 
-export async function createApp({ dbPath, sessionSecret, adminPassword }) {
+export async function createApp({ dbPath, sessionSecret, adminPassword, erp, demoLogin = false }) {
   const { db, adminCreated } = await openDatabase(dbPath, adminPassword);
-  const orderService = new LocalOrderService(db);
+  const demoCustomerId = demoLogin ? await ensureDemoCustomer(db) : null;
+  const orderService = erp ? new ErpOrderService(db, erp) : new LocalOrderService(db);
   const app = express();
   app.disable("x-powered-by");
   app.use(
     helmet({
       contentSecurityPolicy: {
-        directives: { "upgrade-insecure-requests": null },
+        directives: {
+          "upgrade-insecure-requests": null,
+        },
       },
     }),
   );
@@ -49,9 +54,9 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
   app.use("/api", (req, res, next) => {
     res.set("Cache-Control", "no-store");
     if (!["GET", "HEAD", "OPTIONS"].includes(req.method)) {
-      const isImport =
-        req.path === "/admin/import/products" && req.is("multipart/form-data");
-      if (!isImport && !req.is("application/json"))
+      const isUpload = req.method === "POST" && req.is("multipart/form-data") &&
+        (req.path === "/admin/import/products" || /^\/products\/[1-9]\d*\/photo$/.test(req.path));
+      if (!isUpload && !req.is("application/json"))
         return next(
           Object.assign(new Error("Bitte JSON senden."), { status: 415 }),
         );
@@ -67,7 +72,7 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
         );
       }
       if (
-        !isImport &&
+        !isUpload &&
         (!req.body || typeof req.body !== "object" || Array.isArray(req.body))
       ) {
         return next(
@@ -106,7 +111,7 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
   }
   function sessionResult(req) {
     req.session.csrfToken ??= randomBytes(24).toString("hex");
-    return { user: req.user || null, csrfToken: req.session.csrfToken };
+    return { user: req.user || null, csrfToken: req.session.csrfToken, liveErp: Boolean(erp) };
   }
   async function login(req, customerId) {
     await new Promise((resolve, reject) =>
@@ -131,6 +136,22 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
   });
 
   app.get("/api/session", (req, res) => res.json(sessionResult(req)));
+  if (demoLogin) {
+    app.post("/api/demo-login", async (req, res) => {
+      const local = ["127.0.0.1", "::1", "::ffff:127.0.0.1"];
+      if (!local.includes(req.socket.remoteAddress) ||
+          !["localhost", "127.0.0.1", "[::1]"].includes(req.hostname))
+        fail(403, "Der Demo-Login ist nur lokal verfügbar.");
+      const { role } = req.body;
+      if (role !== "admin" && role !== "customer")
+        fail(400, "Bitte Nutzer oder Admin auswählen.");
+      const account = role === "admin"
+        ? db.prepare("SELECT id FROM customers WHERE role = 'admin' ORDER BY id LIMIT 1").get()
+        : db.prepare("SELECT id FROM customers WHERE id = ? AND role = 'customer'").get(demoCustomerId);
+      if (!account) fail(404, "Das Konto ist nicht verfügbar.");
+      res.json(await login(req, account.id));
+    });
+  }
   app.post("/api/register", authLimit, async (req, res) => {
     const name = text(req.body.name, "Name", 100);
     const mail = email(req.body.email);
@@ -188,14 +209,40 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
     res.json({ user: req.user });
   });
 
-  app.get("/api/products", (req, res) => {
-    res.json(
-      db
-        .prepare(
-          "SELECT id, erp_id, name, description, price_cents, category, stock, stock_imported_at FROM products WHERE active=1 ORDER BY id",
-        )
-        .all(),
-    );
+  app.get("/api/products", async (req, res) => {
+    let stock;
+    if (erp) {
+      try {
+        stock = refreshErpCatalog(db, await erp.products());
+      } catch (error) {
+        if (![502, 503].includes(error.status)) throw error;
+      }
+    }
+    const fields = erp ? "" : ", stock, stock_imported_at";
+    const products = db.prepare(
+      `SELECT id, erp_id, name, description, price_cents, category${fields},
+        EXISTS(SELECT 1 FROM product_photos WHERE product_id=products.id) AS has_photo
+        FROM products WHERE active=1 ORDER BY id`,
+    ).all();
+    if (!erp) return res.json(products);
+    const withStock = products.map((p) => {
+      const quantity = stock?.get(p.erp_id) ?? null;
+      const source = !p.erp_id ? "unlinked" : !stock ? "unavailable"
+        : quantity === null ? "missing" : "erp";
+      return { ...p, stock: quantity, stock_source: source };
+    });
+    const visible = req.query.view === "catalog"
+      ? withStock.filter((p) => p.stock > 0 || p.stock_source === "unavailable")
+      : withStock;
+    res.json(visible);
+  });
+  app.get("/api/products/:id/photo", (req, res) => {
+    const photo = db.prepare(
+      `SELECT image FROM product_photos
+       JOIN products ON products.id=product_photos.product_id WHERE id=? AND active=1`,
+    ).get(id(req.params.id));
+    if (!photo) fail(404, "Kein Produktfoto vorhanden.");
+    res.type("image/webp").send(Buffer.from(photo.image));
   });
   function productValues(body) {
     const name = text(body.name, "Produktname", 100);
@@ -251,42 +298,52 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
     if (!result.changes) fail(404, "Produkt nicht gefunden.");
     res.json({ ok: true });
   });
-  // Upload bleibt auf die Verwaltung beschränkt; Dateien werden nur im Speicher verarbeitet.
-  const upload = multer({
-    storage: multer.memoryStorage(),
-    limits: { fileSize: 2 * 1024 * 1024, files: 1, fields: 0 },
-  }).single("file");
+  function receiveFile(maxMb) {
+    const upload = multer({
+      storage: multer.memoryStorage(),
+      limits: { fileSize: maxMb * 1024 * 1024, files: 1, fields: 0 },
+    }).single("file");
+    return (req, res, next) => {
+      upload(req, res, (error) => {
+        if (!error) return next();
+        const tooLarge = error.code === "LIMIT_FILE_SIZE";
+        const message = tooLarge ? `Die Datei darf höchstens ${maxMb} MB groß sein.`
+          : "Der Datei-Upload ist ungültig. Bitte genau eine Datei auswählen.";
+        next(Object.assign(new Error(message), { status: tooLarge ? 413 : 400 }));
+      });
+    };
+  }
+  app.post("/api/products/:id/photo", requireAdmin, receiveFile(5), async (req, res) => {
+    const productId = id(req.params.id);
+    const image = await readProductPhoto(req.file);
+    const result = db.prepare(
+      `INSERT INTO product_photos (product_id, image)
+       SELECT id, ? FROM products WHERE id=? AND active=1
+       ON CONFLICT(product_id) DO UPDATE SET image=excluded.image`,
+    ).run(image, productId);
+    if (!result.changes) fail(404, "Produkt nicht gefunden.");
+    res.json({ ok: true });
+  });
+  app.delete("/api/products/:id/photo", requireAdmin, (req, res) => {
+    db.prepare("DELETE FROM product_photos WHERE product_id=?").run(id(req.params.id));
+    res.json({ ok: true });
+  });
   app.post(
     "/api/admin/import/products",
     requireAdmin,
-    (req, res, next) => {
-      upload(req, res, (error) => {
-        if (!error) return next();
-        const status = error.code === "LIMIT_FILE_SIZE" ? 413 : 400;
-        next(
-          Object.assign(
-            new Error(
-              status === 413
-                ? "Die Datei darf höchstens 2 MB groß sein."
-                : "Der Datei-Upload ist ungültig. Bitte genau eine Datei auswählen.",
-            ),
-            { status },
-          ),
-        );
-      });
-    },
+    receiveFile(2),
     async (req, res) => {
-      res.json(await importProducts(db, req.file));
+      res.json(await importProducts(db, req.file, { keepStock: !erp }));
     },
   );
-  app.post("/api/orders", requireLogin, (req, res) => {
-    res.status(201).json(orderService.placeOrder(req.user, req.body.items));
+  app.post("/api/orders", requireLogin, async (req, res) => {
+    res.status(201).json(await orderService.placeOrder(req.user, req.body.items, req.body.requestID));
   });
-  app.get("/api/orders", requireLogin, (req, res) =>
-    res.json(orderService.listOrders(req.user.id)),
+  app.get("/api/orders", requireLogin, async (req, res) =>
+    res.json(await orderService.listOrders(req.user.id)),
   );
-  app.get("/api/admin/orders", requireAdmin, (req, res) =>
-    res.json(orderService.listOrders()),
+  app.get("/api/admin/orders", requireAdmin, async (req, res) =>
+    res.json(await orderService.listOrders()),
   );
   app.patch("/api/admin/orders/:id", requireAdmin, (req, res) => {
     if (!["pending", "shipped", "completed"].includes(req.body.status))
@@ -304,10 +361,11 @@ export async function createApp({ dbPath, sessionSecret, adminPassword }) {
   app.use((error, req, res, next) => {
     if (res.headersSent) return next(error);
     const status = error.status || 500;
-    if (status >= 500) console.error(error);
+    if (status >= 500 && ![502, 503].includes(status)) console.error(error);
     res.status(status).json({
       error:
-        status >= 500 ? "Ein interner Fehler ist aufgetreten." : error.message,
+        status >= 500 && ![502, 503].includes(status)
+          ? "Ein interner Fehler ist aufgetreten." : error.message,
     });
   });
   return { app, db, adminCreated };

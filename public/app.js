@@ -19,8 +19,10 @@ const state = {
   cart: [],
   search: "",
   category: "Alle",
-  authMode: "login",
   importResult: null,
+  liveErp: false,
+  checkoutPending: null,
+  checkingOut: false,
 };
 try {
   const saved = JSON.parse(localStorage.getItem("minishop-cart") || "[]");
@@ -64,7 +66,7 @@ async function api(path, { method = "GET", body } = {}) {
   });
   const result = await response.json();
   if (!response.ok)
-    throw new Error(result.error || "Die Anfrage ist fehlgeschlagen.");
+    throw Object.assign(new Error(result.error || "Die Anfrage ist fehlgeschlagen."), { status: response.status });
   return result;
 }
 
@@ -90,12 +92,51 @@ function saveCart() {
   }
   updateHeader();
 }
+function stockLabel(product) {
+  if (product.stock_source === "unlinked") return "Keinem ERP-Produkt zugeordnet";
+  if (product.stock_source === "missing") return "Im ERP nicht verfügbar";
+  if (product.stock_source === "unavailable") return "ERP-Bestand derzeit nicht abrufbar";
+  if (product.stock === null) return "Bestand nicht erfasst";
+  return product.stock === 0 ? "Nicht verfügbar" : `${product.stock} verfügbar`;
+}
+
+function stockAllows(product, quantity) {
+  return Boolean(product && (product.stock === null
+    ? !product.stock_source
+    : quantity <= product.stock));
+}
+
+function checkoutAttempt() {
+  if (!state.liveErp || !state.user) return null;
+  const signature = JSON.stringify(
+    [...state.cart].sort((a, b) => a.productId - b.productId),
+  );
+  const key = `minishop-checkout-${state.user.id}`;
+  let saved = state.checkoutPending;
+  try {
+    saved = JSON.parse(localStorage.getItem(key)) || saved;
+  } catch {
+    // Wenn der Browserspeicher fehlt, bleibt die laufende Seite nutzbar.
+  }
+  return saved?.key === key && saved.signature === signature ? saved : null;
+}
+
+function saveCheckout(attempt, key = attempt.key) {
+  state.checkoutPending = attempt;
+  try {
+    if (attempt) localStorage.setItem(key, JSON.stringify(attempt));
+    else localStorage.removeItem(key);
+  } catch {
+    // Der laufende Checkout behält seine Kennung im Seitenspeicher.
+  }
+}
+
 function addToCart(productId) {
   const product = state.products.find((p) => p.id === productId);
   const item = state.cart.find((p) => p.productId === productId);
   if (!product) return notify("Dieses Produkt ist nicht mehr verfügbar.", true);
-  if (product.stock !== null && (item?.quantity || 0) >= product.stock)
-    return notify("Der Bestand laut letztem Import ist erreicht.", true);
+  if (!stockAllows(product, (item?.quantity || 0) + 1))
+    return notify("Die gewünschte Menge ist zurzeit nicht verfügbar.", true);
   if (item?.quantity >= 99)
     return notify("Maximal 99 Stück pro Produkt.", true);
   if (item) item.quantity++;
@@ -104,63 +145,18 @@ function addToCart(productId) {
   notify("Zum Warenkorb hinzugefügt.");
 }
 
-function illustration(product) {
-  const name = product.name.toLowerCase();
-  let drawing;
-  let theme;
-  if (name.includes("kopfhörer")) {
-    theme = "sage";
-    drawing =
-      '<path d="M66 112V88a54 54 0 0 1 108 0v24" fill="none" stroke="#304d44" stroke-width="16"/><path d="M66 99V84a54 54 0 0 1 108 0v15" fill="none" stroke="#729083" stroke-width="5"/><rect x="48" y="98" width="35" height="58" rx="16" fill="#304d44"/><rect x="157" y="98" width="35" height="58" rx="16" fill="#304d44"/><rect x="54" y="104" width="16" height="44" rx="8" fill="#617b70"/><rect x="170" y="104" width="16" height="44" rx="8" fill="#617b70"/>';
-  } else if (name.includes("notiz")) {
-    theme = "peach";
-    drawing =
-      '<g transform="rotate(-12 120 100)"><rect x="72" y="27" width="103" height="146" rx="6" fill="#a55e3c"/><path d="M83 30v140" stroke="#d08a60" stroke-width="3"/><path d="M92 168h76" stroke="#f5ead8" stroke-width="5"/><rect x="153" y="27" width="6" height="139" fill="#6e3f2a"/><text x="101" y="88" font-size="12" letter-spacing="3" fill="#f2d0a2" font-family="sans-serif">NOTES</text><path d="M111 105h30" stroke="#d8ae82"/></g>';
-  } else if (name.includes("tasse")) {
-    theme = "sand";
-    drawing =
-      '<path d="M151 79h15c37 0 34 58 0 58h-15" fill="none" stroke="#b18159" stroke-width="14"/><path d="M68 72h89v66a29 29 0 0 1-29 29H97a29 29 0 0 1-29-29z" fill="#bf946d"/><ellipse cx="112.5" cy="73" rx="44.5" ry="10" fill="#d8b493"/><ellipse cx="112.5" cy="74" rx="35" ry="6" fill="#5d4232"/><path d="M90 95v37" stroke="#d3ad88" stroke-width="6" stroke-linecap="round"/>';
-  } else if (name.includes("tastatur")) {
-    theme = "blue";
-    drawing =
-      '<g transform="rotate(-10 120 100)"><rect x="25" y="63" width="190" height="92" rx="9" fill="#52636b"/><rect x="28" y="60" width="184" height="89" rx="9" fill="#c3ccce"/>' +
-      Array.from(
-        { length: 40 },
-        (_, i) =>
-          `<rect x="${36 + (i % 10) * 17}" y="${69 + Math.floor(i / 10) * 17}" width="13" height="12" rx="2" fill="${i % 9 === 0 ? "#7e9a98" : "#edf1ef"}"/>`,
-      ).join("") +
-      '<rect x="83" y="123" width="65" height="12" rx="2" fill="#edf1ef"/></g>';
-  } else if (name.includes("lampe")) {
-    theme = "yellow";
-    drawing =
-      '<ellipse cx="120" cy="171" rx="45" ry="8" fill="#a98c40"/><path d="M120 166v-57l31-54" stroke="#4a5543" stroke-width="8" fill="none"/><circle cx="120" cy="110" r="7" fill="#6b7455"/><path d="M125 43q21-13 40 8l16 29-66-3z" fill="#738062"/><path d="M117 78h61l-13 36h-41z" fill="#f1d980" opacity=".4"/><ellipse cx="148" cy="78" rx="33" ry="7" fill="#ded3a0"/>';
-  } else if (name.includes("rucksack")) {
-    theme = "rose";
-    drawing =
-      '<path d="M101 42v-8q19-18 38 0v8" stroke="#615b4d" stroke-width="8" fill="none"/><path d="M70 83q0-42 50-42t50 42v77q0 12-14 12H84q-14 0-14-12z" fill="#7c8069"/><path d="M79 81q0-30 41-30t41 30" stroke="#a2a48b" stroke-width="3" fill="none"/><rect x="85" y="111" width="70" height="48" rx="9" fill="#656e58"/><path d="M92 120h56" stroke="#b3b49b" stroke-width="3"/><rect x="109" y="79" width="22" height="12" rx="2" fill="#c5ac7e"/>';
-  } else {
-    theme = "sage";
-    drawing =
-      '<path d="m65 73 55-28 55 28v73l-55 28-55-28z" fill="#7e9c8c"/><path d="m65 73 55 28 55-28M120 101v73M92 59l55 28" fill="none" stroke="#d9e6de" stroke-width="3"/>';
-  }
-  return `<div class="product-art ${theme}" aria-hidden="true"><svg viewBox="0 0 240 200"><ellipse cx="120" cy="177" rx="72" ry="7" fill="#000" opacity=".055"/>${drawing}</svg></div>`;
+function productArtwork(product) {
+  if (!product?.has_photo)
+    return '<div class="product-art product-photo-placeholder">Kein Produktfoto</div>';
+  return `<div class="product-art photo-art"><img src="/api/products/${product.id}/photo" alt="${escape(product.name)}" loading="lazy" decoding="async"></div>`;
 }
 
 function productCard(p) {
-  const stockText =
-    p.stock === null
-      ? "Bestand nicht erfasst"
-      : p.stock === 0
-        ? "Nicht verfügbar"
-        : `${p.stock} verfügbar`;
-  const stockDetail =
-    p.stock === null
-      ? ""
-      : p.stock_imported_at
-        ? ` · Import ${new Intl.DateTimeFormat("de-DE", { dateStyle: "short", timeStyle: "short" }).format(new Date(p.stock_imported_at))}`
-        : " · Stand letzter Import";
-  return `<article class="product-card">${illustration(p)}<div class="product-info"><span class="eyebrow">${escape(p.category)}</span><h3>${escape(p.name)}</h3><p>${escape(p.description)}</p><div class="stock-note ${p.stock === 0 ? "out-of-stock" : ""}">${stockText}${stockDetail}</div><div class="product-bottom"><strong>${money(p.price_cents)}</strong><button class="add-button" data-add="${p.id}" aria-label="${escape(p.name)} in den Warenkorb" ${p.stock === 0 ? "disabled" : ""}><span aria-hidden="true">+</span> Hinzufügen</button></div></div></article>`;
+  const stockText = stockLabel(p);
+  const stockDetail = p.stock_imported_at ? " · Stand letzter Import" : "";
+  return `<article class="product-card">${productArtwork(p)}<div class="product-info"><span class="eyebrow">${escape(p.category)}</span><h3>${escape(p.name)}</h3><p>${escape(p.description)}</p><div class="stock-note ${p.stock === 0 ? "out-of-stock" : ""}">${stockText}${stockDetail}</div><div class="product-bottom"><strong>${money(p.price_cents)}</strong><button class="add-button" data-add="${p.id}" aria-label="${escape(p.name)} in den Warenkorb" ${stockAllows(p, 1) ? "" : "disabled"}><span aria-hidden="true">+</span> Hinzufügen</button></div></div></article>`;
 }
+
 function filterProducts() {
   const products = state.products.filter(
     (p) =>
@@ -171,7 +167,9 @@ function filterProducts() {
   );
   $("#product-grid").innerHTML =
     products.map(productCard).join("") ||
-    '<p class="empty-inline">Keine Produkte gefunden. Probiere einen anderen Suchbegriff.</p>';
+    (state.products.length
+      ? '<p class="empty-inline">Keine Produkte gefunden. Probiere einen anderen Suchbegriff.</p>'
+      : '<p class="empty-inline">Zurzeit sind keine Produkte verfügbar.</p>');
   $("#product-results").textContent =
     `${products.length} ${products.length === 1 ? "Produkt" : "Produkte"}`;
   document.querySelectorAll("[data-category]").forEach((button) => {
@@ -215,6 +213,8 @@ function renderCart() {
     (sum, item) => sum + (item.product?.price_cents || 0) * item.quantity,
     0,
   );
+  const retry = Boolean(checkoutAttempt());
+  const blocked = rows.some(({ product, quantity }) => !stockAllows(product, quantity));
   main.innerHTML =
     heading(
       "DEINE AUSWAHL",
@@ -226,19 +226,19 @@ function renderCart() {
           "Hier ist noch Platz.",
           "Entdecke unsere Produkte und stelle deine Auswahl zusammen.",
         )
-      : `<div class="cart-layout"><section class="cart-items" aria-label="Warenkorbpositionen">${rows.map((item) => `<article class="cart-row">${item.product ? illustration(item.product) : '<div class="unavailable-art">?</div>'}<div class="cart-product"><h3>${escape(item.product?.name || "Produkt nicht mehr verfügbar")}</h3><p class="muted">${item.product ? `${money(item.product.price_cents)} / Stück${item.product.stock === null ? "" : ` · ${item.product.stock} verfügbar (Stand letzter Import)`}` : "Bitte aus dem Warenkorb entfernen."}</p><button class="text-button remove" data-remove="${item.productId}">Entfernen</button></div><label class="quantity">Menge<input type="number" min="1" max="99" value="${item.quantity}" data-quantity="${item.productId}" aria-label="Menge für ${escape(item.product?.name || "entferntes Produkt")}"></label><strong>${item.product ? money(item.product.price_cents * item.quantity) : "—"}</strong></article>`).join("")}</section><aside class="summary"><h2>Deine Bestellung</h2><div class="summary-line"><span>Zwischensumme</span><span>${money(total)}</span></div><div class="summary-line"><span>Versand</span><span>Kostenlos</span></div><div class="summary-line total"><span>Gesamt</span><strong>${money(total)}</strong></div>${state.user ? `<div class="shipping"><span class="eyebrow">LIEFERUNG AN</span><strong>${escape(state.user.name)}</strong><p>${escape(state.user.address)}</p><a href="#account">Adresse bearbeiten</a></div>${rows.some((i) => !i.product || (i.product.stock !== null && i.quantity > i.product.stock)) ? '<p class="form-error">Bitte Menge an den verfügbaren Bestand anpassen oder das Produkt entfernen.</p>' : ""}<button class="button full" id="checkout" ${rows.some((i) => !i.product || (i.product.stock !== null && i.quantity > i.product.stock)) ? "disabled" : ""}>Jetzt bestellen <span aria-hidden="true">↗</span></button><p class="small muted">Übungs-Shop: Es erfolgt keine Zahlung und kein tatsächlicher Versand.</p>` : '<p class="muted">Melde dich an oder erstelle ein Konto, um zu bestellen.</p><button class="button full" data-open-auth>Anmelden & bestellen</button>'}</aside></div>`);
+      : `<div class="cart-layout"><section class="cart-items" aria-label="Warenkorbpositionen">${rows.map((item) => `<article class="cart-row">${productArtwork(item.product)}<div class="cart-product"><h3>${escape(item.product?.name || "Produkt nicht mehr verfügbar")}</h3><p class="muted">${item.product ? `${money(item.product.price_cents)} / Stück · ${stockLabel(item.product)}` : "Bitte aus dem Warenkorb entfernen."}</p><button class="text-button remove" data-remove="${item.productId}">Entfernen</button></div><label class="quantity">Menge<input type="number" min="1" max="99" value="${item.quantity}" data-quantity="${item.productId}" aria-label="Menge für ${escape(item.product?.name || "entferntes Produkt")}"></label><strong>${item.product ? money(item.product.price_cents * item.quantity) : "—"}</strong></article>`).join("")}</section><aside class="summary"><h2>Deine Bestellung</h2><div class="summary-line"><span>Zwischensumme</span><span>${money(total)}</span></div><div class="summary-line"><span>Versand</span><span>Kostenlos</span></div><div class="summary-line total"><span>Gesamt</span><strong>${money(total)}</strong></div>${state.user ? `<div class="shipping"><span class="eyebrow">LIEFERUNG AN</span><strong>${escape(state.user.name)}</strong><p>${escape(state.user.address)}</p><a href="#account">Adresse bearbeiten</a></div>${blocked && !retry ? '<p class="form-error">Prüfe den Bestand oder passe die Menge an.</p>' : ""}<button class="button full" id="checkout" ${blocked && !retry ? "disabled" : ""}>${retry ? "Bestellung erneut prüfen" : "Jetzt bestellen"} <span aria-hidden="true">↗</span></button><p class="small muted">Übungs-Shop: Es erfolgt keine Zahlung und kein tatsächlicher Versand.</p>` : '<p class="muted">Melde dich an, um zu bestellen.</p><button class="button full" data-open-auth>Anmelden & bestellen</button>'}</aside></div>`);
 }
 function orderCard(order, admin = false) {
   const labels = {
     pending: "Offen",
     shipped: "Versendet",
     completed: "Abgeschlossen",
+    picked: "Kommissioniert",
+    canceled: "Storniert",
   };
-  return `<article class="order-card"><div class="order-head"><div><span class="eyebrow">BESTELLUNG #${String(order.id).padStart(4, "0")}</span><h3>${new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(new Date(order.created_at))}</h3></div><span class="badge ${escape(order.status)}">${labels[order.status]}</span></div>${admin ? `<p class="muted">${escape(order.customer_name)} · ${escape(order.customer_email)}</p>` : ""}<ul class="order-items">${order.items.map((item) => `<li><span>${item.quantity} × ${escape(item.product_name)}</span><strong>${money(item.unit_price_cents * item.quantity)}</strong></li>`).join("")}</ul><div class="order-foot"><span class="muted address">${escape(order.shipping_address)}</span><strong>Gesamt ${money(order.total_cents)}</strong></div>${
-    admin
-      ? `<label class="status-control">Bestellstatus<select aria-label="Bestellstatus" data-order-status="${order.id}">${Object.entries(
-          labels,
-        )
+  return `<article class="order-card"><div class="order-head"><div><span class="eyebrow">${order.source === "erp" ? "ERP-BESTELLUNG" : "BESTELLUNG"} #${String(order.id).padStart(4, "0")}</span><h3>${new Intl.DateTimeFormat("de-DE", { dateStyle: "medium", timeStyle: "short" }).format(new Date(order.created_at))}</h3></div><span class="badge ${escape(order.status)}">${labels[order.status]}</span></div>${admin ? `<p class="muted">${escape(order.customer_name)} · ${escape(order.customer_email)}</p>` : ""}<ul class="order-items">${order.items.map((item) => `<li><span>${item.quantity} × ${escape(item.product_name)}</span><strong>${money(item.unit_price_cents * item.quantity)}</strong></li>`).join("")}</ul><div class="order-foot"><span class="muted address">${escape(order.shipping_address)}</span><strong>Gesamt ${money(order.total_cents)}</strong></div>${
+    admin && order.source !== "erp"
+      ? `<label class="status-control">Bestellstatus<select aria-label="Bestellstatus" data-order-status="${order.id}">${Object.entries(labels).filter(([value]) => ["pending", "shipped", "completed"].includes(value))
           .map(
             ([value, label]) =>
               `<option value="${value}" ${value === order.status ? "selected" : ""}>${label}</option>`,
@@ -254,7 +254,7 @@ function renderAccount() {
       empty(
         "Alles an einem Ort.",
         "Melde dich an, um deine Daten und Bestellungen zu sehen.",
-        '<button class="button" data-open-auth>Anmelden oder registrieren</button>',
+        '<button class="button" data-open-auth>Anmelden</button>',
       );
     return;
   }
@@ -264,21 +264,66 @@ function renderAccount() {
       "Hallo, " + escape(state.user.name) + ".",
       "Hier kannst du deine persönlichen Daten und deine Lieferadresse ändern.",
     ) +
-    `<div class="account-layout"><form id="profile-form" class="panel"><h2>Persönliche Daten</h2><label>Name<input name="name" required autocomplete="name" maxlength="100" value="${escape(state.user.name)}"></label><label>E-Mail<input name="email" type="email" required autocomplete="email" maxlength="254" value="${escape(state.user.email)}"></label><label>Lieferadresse<textarea name="address" required autocomplete="street-address" maxlength="500" rows="4">${escape(state.user.address)}</textarea></label><button class="button" type="submit">Änderungen speichern</button></form><aside class="panel account-aside"><span class="eyebrow">GUT ZU WISSEN</span><h2>Deine nächste Bestellung?</h2><p class="muted">Deine Lieferadresse wird beim Bestellen übernommen. Bereits aufgegebene Bestellungen behalten die damalige Adresse.</p><a href="#orders">Meine Bestellungen ansehen ↗</a><hr><button class="text-button" id="logout">Abmelden</button></aside></div>`;
+    `<div class="account-layout"><form id="profile-form" class="panel"><h2>Persönliche Daten</h2><label>Name<input name="name" required autocomplete="name" maxlength="100" value="${escape(state.user.name)}"></label><label>E-Mail<input name="email" type="email" required autocomplete="email" maxlength="254" value="${escape(state.user.email)}"></label><label>Lieferadresse<textarea name="address" required autocomplete="street-address" maxlength="500" rows="4">${escape(state.user.address)}</textarea></label><button class="button" type="submit">Änderungen speichern</button></form><aside class="panel account-aside"><span class="eyebrow">GUT ZU WISSEN</span><h2>Deine nächste Bestellung?</h2><p class="muted">Deine Lieferadresse wird beim Bestellen übernommen. Bereits aufgegebene Bestellungen behalten die damalige Adresse.</p><a href="#orders">Meine Bestellungen ansehen ↗</a><hr><div class="form-actions"><button class="text-button" data-open-auth>Konto wechseln</button><button class="text-button" id="logout">Abmelden</button></div></aside></div>`;
 }
 function renderImportPanel() {
   const result = state.importResult;
   return `<section class="panel import-panel" aria-labelledby="import-heading">
     <div><span class="eyebrow">LAB 2 · DATEIAUSTAUSCH</span><h2 id="import-heading">Produkte aus dem ERP importieren</h2>
     <p class="muted">Exportiere die Produktliste im Mini-ERP als Excel und wähle die Datei hier aus. Alternativ kannst du die CSV-Datei der ERP-Schnittstelle verwenden.</p>
-    <p class="small muted">Der Bestand zeigt den Stand des letzten Imports. Nicht enthaltene Produkte bleiben im Shop; Preise ohne Währungsangabe werden als Euro behandelt.</p></div>
+    <p class="small muted">${state.liveErp ? "Neue ERP-Produkte erscheinen automatisch. Mit dem Dateiimport kannst du vorhandene Katalogdaten aktualisieren." : "Der Bestand zeigt den Stand des letzten Imports. Produkte, die in der Datei fehlen, bleiben im Shop."}</p></div>
     <form id="import-form" enctype="multipart/form-data"><label>ERP-Produktdatei (.xlsx oder .csv, höchstens 2 MB)<input type="file" name="file" accept=".xlsx,.csv" required></label>
     <p id="import-error" class="form-error" role="alert"></p><button class="button" type="submit">Datei importieren</button>
     ${result ? `<p class="import-success" role="status">Import abgeschlossen: ${result.created} neu, ${result.updated} aktualisiert.</p>` : ""}</form>
   </section>`;
 }
 
-function renderAdmin(orders) {
+function productPhotoForm() {
+  return `<form id="product-photo-form" class="product-photo-form" hidden>
+    <label>Produktfoto<input type="file" name="file" accept="image/jpeg,image/png,image/webp" required></label>
+    <p class="small muted">JPEG, PNG oder WebP, bis 5 MB.</p>
+    <img id="product-photo-preview" alt="Aktuelles Produktfoto" width="160" height="100" hidden>
+    <div class="form-actions"><button class="quiet" type="submit">Foto speichern</button>
+      <button class="text-button remove" type="button" id="remove-product-photo" hidden>Foto entfernen</button></div>
+    <p class="form-error" id="product-photo-error" role="alert"></p>
+  </form>`;
+}
+
+function showProductPhotoForm(product) {
+  const form = $("#product-photo-form");
+  form.reset();
+  form.dataset.productId = product.id;
+  form.hidden = false;
+  const preview = $("#product-photo-preview");
+  preview.hidden = !product.has_photo;
+  $("#remove-product-photo").hidden = !product.has_photo;
+  $("#product-photo-error").textContent = "";
+  if (product.has_photo) preview.src = `/api/products/${product.id}/photo?v=${Date.now()}`;
+  else preview.removeAttribute("src");
+}
+
+async function changeProductPhoto(form, method) {
+  const product = state.products.find((item) => item.id === Number(form.dataset.productId));
+  if (!product) return;
+  const controls = form.querySelectorAll("button");
+  controls.forEach((control) => (control.disabled = true));
+  $("#product-photo-error").textContent = "";
+  try {
+    const body = method === "POST" ? new FormData(form) : {};
+    await api(`/products/${product.id}/photo`, { method, body });
+    product.has_photo = method === "POST";
+    if (!form.hidden && Number(form.dataset.productId) === product.id)
+      showProductPhotoForm(product);
+    notify(method === "POST" ? "Produktfoto gespeichert." : "Produktfoto entfernt.");
+  } catch (error) {
+    if (!form.hidden && Number(form.dataset.productId) === product.id)
+      form.querySelector("#product-photo-error").textContent = error.message;
+  } finally {
+    controls.forEach((control) => (control.disabled = false));
+  }
+}
+
+function renderAdmin(orders, orderError) {
   main.innerHTML =
     heading(
       "VERWALTUNG",
@@ -286,7 +331,7 @@ function renderAdmin(orders) {
       "Produkte pflegen und Bestellungen bearbeiten.",
     ) +
     renderImportPanel() +
-    `<div class="admin-layout"><section class="panel"><h2 id="product-form-heading">Produkt hinzufügen</h2><form id="product-form"><input type="hidden" name="id"><label>Produktname<input name="name" required maxlength="100"></label><label>Beschreibung<textarea name="description" maxlength="1000" rows="3"></textarea></label><div class="form-columns"><label>Preis in €<input name="price" inputmode="decimal" required placeholder="19,90" pattern="[0-9]{1,6}([.,][0-9]{1,2})?"></label><label>Kategorie<input name="category" required maxlength="50" list="categories"><datalist id="categories"><option value="Technik"><option value="Schreibtisch"><option value="Alltag"></datalist></label></div><div class="form-actions"><button class="button" type="submit" id="product-submit">Produkt hinzufügen</button><button class="quiet" type="button" id="reset-product" hidden>Abbrechen</button></div></form></section><section class="panel"><h2>Produkte <span class="muted">(${state.products.length})</span></h2><div class="manage-products">${state.products.map((p) => `<div class="manage-row"><div><strong>${escape(p.name)}</strong><span class="muted">${money(p.price_cents)} · ${escape(p.category)}${p.erp_id ? ` · ERP-ID: ${escape(p.erp_id)}` : ""}</span></div><div class="manage-actions"><button class="text-button" data-edit="${p.id}">Bearbeiten</button><button class="text-button remove" data-delete="${p.id}" aria-label="${escape(p.name)} entfernen">Entfernen</button></div></div>`).join("") || '<p class="muted">Noch keine Produkte angelegt.</p>'}</div></section></div><section class="admin-orders"><div class="section-heading"><h2>Alle Bestellungen</h2><span class="muted">${orders.length} ${orders.length === 1 ? "Bestellung" : "Bestellungen"}</span></div>${orders.length ? `<div class="order-grid">${orders.map((order) => orderCard(order, true)).join("")}</div>` : '<p class="muted">Es sind noch keine Bestellungen eingegangen.</p>'}</section>`;
+    `<div class="admin-layout"><section class="panel"><h2 id="product-form-heading">Produkt hinzufügen</h2><form id="product-form"><input type="hidden" name="id"><label>Produktname<input name="name" required maxlength="100"></label><label>Beschreibung<textarea name="description" maxlength="1000" rows="3"></textarea></label><div class="form-columns"><label>Preis in €<input name="price" inputmode="decimal" required placeholder="19,90" pattern="[0-9]{1,6}([.,][0-9]{1,2})?"></label><label>Kategorie<input name="category" required maxlength="50" list="categories"><datalist id="categories"><option value="Technik"><option value="Schreibtisch"><option value="Alltag"></datalist></label></div><div class="form-actions"><button class="button" type="submit" id="product-submit">Produkt hinzufügen</button><button class="quiet" type="button" id="reset-product" hidden>Abbrechen</button></div></form>${productPhotoForm()}</section><section class="panel"><h2>Produkte <span class="muted">(${state.products.length})</span></h2><div class="manage-products">${state.products.map((p) => `<div class="manage-row"><div><strong>${escape(p.name)}</strong><span class="muted">${money(p.price_cents)} · ${escape(p.category)}${p.erp_id ? ` · ERP-ID: ${escape(p.erp_id)}` : ""}</span></div><div class="manage-actions"><button class="text-button" data-edit="${p.id}">Bearbeiten</button><button class="text-button remove" data-delete="${p.id}" aria-label="${escape(p.name)} entfernen">Entfernen</button></div></div>`).join("") || '<p class="muted">Noch keine Produkte angelegt.</p>'}</div></section></div><section class="admin-orders"><div class="section-heading"><h2>Alle Bestellungen</h2><span class="muted">${orderError ? "" : orders.length + (orders.length === 1 ? " Bestellung" : " Bestellungen")}</span></div>${orderError ? `<p class="form-error" role="alert">${escape(orderError)}</p><button class="quiet" data-retry>Erneut versuchen</button>` : orders.length ? `<div class="order-grid">${orders.map((order) => orderCard(order, true)).join("")}</div>` : '<p class="muted">Es sind noch keine Bestellungen eingegangen.</p>'}</section>`;
 }
 
 async function render() {
@@ -319,10 +364,22 @@ async function render() {
         return;
       }
       main.innerHTML = '<p class="loading">Bestellungen werden geladen …</p>';
-      const orders = await api(page === "admin" ? "/admin/orders" : "/orders");
-      if (version !== renderVersion) return;
-      if (page === "admin") renderAdmin(orders);
-      else
+      if (page === "admin") {
+        let orderError;
+        const [products, orders] = await Promise.all([
+          api("/products"),
+          api("/admin/orders").catch((error) => {
+            if (![502, 503].includes(error.status)) throw error;
+            orderError = error.message;
+            return [];
+          }),
+        ]);
+        if (version !== renderVersion) return;
+        state.products = products;
+        renderAdmin(orders, orderError);
+      } else {
+        const orders = await api("/orders");
+        if (version !== renderVersion) return;
         main.innerHTML =
           heading(
             "DEINE KAUFHISTORIE",
@@ -335,7 +392,11 @@ async function render() {
                 "Deine erste Bestellung wartet.",
                 "Sobald du etwas bestellst, findest du es hier wieder.",
               ));
+      }
     } else {
+      const products = await api("/products?view=catalog");
+      if (version !== renderVersion) return;
+      state.products = products;
       renderProducts();
       if (page === "catalog")
         $("#catalog").scrollIntoView({ behavior: "smooth" });
@@ -350,31 +411,8 @@ async function render() {
   }
 }
 
-function setAuthMode(mode) {
-  state.authMode = mode;
-  const register = mode === "register";
-  $("#auth-heading").textContent = register
-    ? "Dein Alltag. Dein Konto."
-    : "Willkommen zurück.";
-  $("#auth-description").textContent = register
-    ? "Erstelle dein Konto und entdecke deine Lieblingsstücke."
-    : "Melde dich an, um deine Bestellung abzuschließen.";
-  $("#register-name").hidden = !register;
-  $("#register-address").hidden = !register;
-  $("#auth-form").elements.name.required = register;
-  $("#auth-form").elements.address.required = register;
-  $("#auth-form").elements.password.minLength = register ? 10 : 1;
-  $("#auth-form").elements.password.autocomplete = register
-    ? "new-password"
-    : "current-password";
-  $("#auth-submit").textContent = register ? "Konto erstellen" : "Anmelden";
-  $("#toggle-auth").textContent = register
-    ? "Schon ein Konto? Anmelden"
-    : "Neu hier? Konto erstellen";
-  $("#auth-error").textContent = "";
-}
 function openAuth() {
-  setAuthMode("login");
+  $("#auth-error").textContent = "";
   $("#auth-dialog").showModal();
 }
 $("#account-button").addEventListener("click", () => {
@@ -382,9 +420,6 @@ $("#account-button").addEventListener("click", () => {
   else openAuth();
 });
 $("#close-auth").addEventListener("click", () => $("#auth-dialog").close());
-$("#toggle-auth").addEventListener("click", () =>
-  setAuthMode(state.authMode === "login" ? "register" : "login"),
-);
 $("#auth-dialog").addEventListener("click", (event) => {
   if (event.target === $("#auth-dialog")) {
     const box = event.target.getBoundingClientRect();
@@ -397,28 +432,25 @@ $("#auth-dialog").addEventListener("click", (event) => {
       event.target.close();
   }
 });
-$("#auth-form").addEventListener("submit", async (event) => {
-  event.preventDefault();
-  const button = $("#auth-submit");
-  button.disabled = true;
+async function demoLogin(role) {
+  const buttons = document.querySelectorAll("[data-demo-role]");
+  buttons.forEach((button) => (button.disabled = true));
   $("#auth-error").textContent = "";
   try {
-    const data = Object.fromEntries(new FormData(event.target));
-    const result = await api(
-      state.authMode === "login" ? "/login" : "/register",
-      { method: "POST", body: data },
-    );
-    Object.assign(state, result);
-    event.target.reset();
+    if (!state.csrfToken) Object.assign(state, await api("/session"));
+    const result = await api("/demo-login", { method: "POST", body: { role } });
+    Object.assign(state, result, { importResult: null });
     $("#auth-dialog").close();
-    notify("Du bist angemeldet. Schön, dass du da bist!");
-    await render();
+    const page = role === "admin" ? "#admin"
+      : location.hash === "#cart" ? "#cart" : "#products";
+    if (location.hash === page) await render();
+    else location.hash = page;
   } catch (error) {
     $("#auth-error").textContent = error.message;
   } finally {
-    button.disabled = false;
+    buttons.forEach((button) => (button.disabled = false));
   }
-});
+}
 
 document.addEventListener("click", async (event) => {
   const target = event.target.closest("button");
@@ -428,7 +460,8 @@ document.addEventListener("click", async (event) => {
     else if (target.hasAttribute("data-category")) {
       state.category = target.dataset.category;
       filterProducts();
-    } else if (target.hasAttribute("data-open-auth")) openAuth();
+    } else if (target.hasAttribute("data-demo-role")) await demoLogin(target.dataset.demoRole);
+    else if (target.hasAttribute("data-open-auth")) openAuth();
     else if (target.hasAttribute("data-retry")) await render();
     else if (target.hasAttribute("data-remove")) {
       state.cart = state.cart.filter(
@@ -437,19 +470,37 @@ document.addEventListener("click", async (event) => {
       saveCart();
       renderCart();
     } else if (target.id === "checkout") {
+      if (state.checkingOut) return;
+      state.checkingOut = true;
       target.disabled = true;
+      let attempt = checkoutAttempt();
       try {
+        if (state.liveErp && !attempt) {
+          attempt = {
+            key: `minishop-checkout-${state.user.id}`,
+            signature: JSON.stringify([...state.cart].sort((a, b) => a.productId - b.productId)),
+            requestID: crypto.randomUUID(),
+          };
+          saveCheckout(attempt);
+        }
         const order = await api("/orders", {
           method: "POST",
-          body: { items: state.cart },
+          body: { items: state.cart, requestID: attempt?.requestID },
         });
+        if (attempt) saveCheckout(null, attempt.key);
         state.cart = [];
         saveCart();
         location.hash = "orders";
         notify(
-          `Bestellung #${String(order.id).padStart(4, "0")} wurde aufgenommen.`,
+          `${order.source === "erp" ? "ERP-Bestellung" : "Bestellung"} #${String(order.id).padStart(4, "0")} bestätigt.`,
         );
+      } catch (error) {
+        if (attempt && [400, 409, 422].includes(error.status))
+          saveCheckout(null, attempt.key);
+        if (location.hash === "#cart") await render();
+        throw error;
       } finally {
+        state.checkingOut = false;
         target.disabled = false;
       }
     } else if (target.id === "logout") {
@@ -474,6 +525,7 @@ document.addEventListener("click", async (event) => {
       $("#product-form-heading").textContent = "Produkt bearbeiten";
       $("#product-submit").textContent = "Änderungen speichern";
       $("#reset-product").hidden = false;
+      showProductPhotoForm(product);
       form.elements.name.focus();
       form.scrollIntoView({ behavior: "smooth", block: "center" });
     } else if (target.id === "reset-product") {
@@ -482,6 +534,9 @@ document.addEventListener("click", async (event) => {
       $("#product-form-heading").textContent = "Produkt hinzufügen";
       $("#product-submit").textContent = "Produkt hinzufügen";
       target.hidden = true;
+      $("#product-photo-form").hidden = true;
+    } else if (target.id === "remove-product-photo") {
+      await changeProductPhoto($("#product-photo-form"), "DELETE");
     } else if (target.hasAttribute("data-delete")) {
       const product = state.products.find(
         (p) => p.id === Number(target.dataset.delete),
@@ -493,7 +548,6 @@ document.addEventListener("click", async (event) => {
       )
         return;
       await api(`/products/${product.id}`, { method: "DELETE", body: {} });
-      state.products = await api("/products");
       await render();
       notify("Produkt entfernt.");
     }
@@ -547,6 +601,11 @@ document.addEventListener("change", async (event) => {
 document.addEventListener("submit", async (event) => {
   const form = event.target;
   const formId = form.getAttribute("id");
+  if (formId === "product-photo-form") {
+    event.preventDefault();
+    await changeProductPhoto(form, "POST");
+    return;
+  }
   if (!["profile-form", "product-form", "import-form"].includes(formId)) return;
   event.preventDefault();
   const button = form.querySelector('button[type="submit"]');
@@ -563,7 +622,6 @@ document.addEventListener("submit", async (event) => {
         method: "POST",
         body: data,
       });
-      state.products = await api("/products");
       await render();
       notify("Produktdatei erfolgreich importiert.");
     } else if (formId === "profile-form") {
@@ -576,7 +634,6 @@ document.addEventListener("submit", async (event) => {
         method: data.id ? "PATCH" : "POST",
         body: data,
       });
-      state.products = await api("/products");
       await render();
       notify("Produkt gespeichert.");
     }
@@ -595,11 +652,7 @@ window.addEventListener("hashchange", () => {
 
 async function start() {
   try {
-    const [session, products] = await Promise.all([
-      api("/session"),
-      api("/products"),
-    ]);
-    Object.assign(state, session, { products });
+    Object.assign(state, await api("/session"));
     await render();
   } catch (error) {
     main.innerHTML = empty(

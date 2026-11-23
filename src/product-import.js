@@ -121,7 +121,7 @@ async function readRows(file) {
   }
 }
 
-export async function importProducts(db, file) {
+export async function importProducts(db, file, { keepStock = true } = {}) {
   if (!file || !file.buffer.length) fail(400, "Bitte eine Datei auswählen.");
   const rows = await readRows(file);
   if (rows.length < 2) fail(400, "Die Datei enthält keine Produktdaten.");
@@ -173,8 +173,8 @@ export async function importProducts(db, file) {
           product.name,
           product.description,
           product.price,
-          product.stock,
-          importedAt,
+          keepStock ? product.stock : null,
+          keepStock ? importedAt : null,
           product.id,
         );
         updated++;
@@ -184,8 +184,8 @@ export async function importProducts(db, file) {
           product.name,
           product.description,
           product.price,
-          product.stock,
-          importedAt,
+          keepStock ? product.stock : null,
+          keepStock ? importedAt : null,
         );
         created++;
       }

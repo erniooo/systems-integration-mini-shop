@@ -1,6 +1,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
+import { randomUUID } from "node:crypto";
 import session from "express-session";
 import { hashPassword } from "./security.js";
 
@@ -13,7 +14,7 @@ export async function openDatabase(path, adminPassword) {
     PRAGMA busy_timeout = 5000;
     CREATE TABLE IF NOT EXISTS customers (
       id INTEGER PRIMARY KEY, name TEXT NOT NULL, email TEXT NOT NULL UNIQUE,
-      address TEXT NOT NULL, password_hash TEXT NOT NULL,
+      address TEXT NOT NULL, password_hash TEXT NOT NULL, erp_buyer_id TEXT,
       role TEXT NOT NULL DEFAULT 'customer' CHECK(role IN ('customer', 'admin'))
     );
     CREATE TABLE IF NOT EXISTS products (
@@ -21,6 +22,10 @@ export async function openDatabase(path, adminPassword) {
       description TEXT NOT NULL, price_cents INTEGER NOT NULL CHECK(price_cents >= 0),
       category TEXT NOT NULL DEFAULT 'Sonstiges', active INTEGER NOT NULL DEFAULT 1,
       stock INTEGER CHECK(stock IS NULL OR stock >= 0), stock_imported_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS product_photos (
+      product_id INTEGER PRIMARY KEY REFERENCES products(id) ON DELETE CASCADE,
+      image BLOB NOT NULL
     );
     CREATE TABLE IF NOT EXISTS orders (
       id INTEGER PRIMARY KEY, customer_id INTEGER NOT NULL REFERENCES customers(id),
@@ -49,6 +54,8 @@ export async function openDatabase(path, adminPassword) {
     );
   if (!columns.includes("stock_imported_at"))
     db.exec("ALTER TABLE products ADD COLUMN stock_imported_at TEXT");
+  if (!db.prepare("PRAGMA table_info(customers)").all().some(({ name }) => name === "erp_buyer_id"))
+    db.exec("ALTER TABLE customers ADD COLUMN erp_buyer_id TEXT");
   if (!db.prepare("SELECT 1 FROM metadata WHERE key = 'seeded'").get()) {
     const insert = db.prepare(
       "INSERT INTO products (name, description, price_cents, category) VALUES (?, ?, ?, ?)",
@@ -115,6 +122,35 @@ export async function openDatabase(path, adminPassword) {
     return { db, adminCreated: true };
   }
   return { db, adminCreated: false };
+}
+
+export async function ensureDemoCustomer(db) {
+  const key = "demo_customer_id";
+  const find = db.prepare("SELECT value FROM metadata WHERE key = ?");
+  const existing = find.get(key);
+  if (existing) return Number(existing.value);
+
+  const id = randomUUID();
+  const hash = await hashPassword(randomUUID());
+  db.exec("BEGIN IMMEDIATE");
+  try {
+    const current = find.get(key);
+    if (current) {
+      db.exec("COMMIT");
+      return Number(current.value);
+    }
+    const result = db.prepare(
+      "INSERT INTO customers (name, email, address, password_hash) VALUES (?, ?, ?, ?)",
+    ).run("Demo-Nutzer", `demo-${id}@minishop.local`, "Campus 1, 52062 Aachen", hash);
+    db.prepare("INSERT INTO metadata (key, value) VALUES (?, ?)").run(
+      key, String(result.lastInsertRowid),
+    );
+    db.exec("COMMIT");
+    return Number(result.lastInsertRowid);
+  } catch (error) {
+    db.exec("ROLLBACK");
+    throw error;
+  }
 }
 
 // Sitzungen überleben einen Neustart; Passwörter stehen niemals in der Sitzung.

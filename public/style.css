@@ -472,31 +472,31 @@ main {
   place-items: center;
   overflow: hidden;
 }
-.product-art svg {
-  height: 190px;
-  width: 240px;
-  transition: transform 0.25s;
+.photo-art,
+.product-photo-placeholder {
+  background: #f3f4f1;
 }
-.product-card:hover .product-art svg {
-  transform: translateY(-4px) rotate(-2deg);
+.photo-art img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  min-height: 0;
 }
-.sage {
-  background: #e6ece3;
+.product-photo-placeholder {
+  padding: 8px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 12px;
 }
-.peach {
-  background: #f1e4d7;
+.product-photo-form {
+  margin-top: 24px;
+  padding-top: 18px;
+  border-top: 1px solid var(--line);
 }
-.sand {
-  background: #efeadd;
-}
-.blue {
-  background: #e6ebec;
-}
-.yellow {
-  background: #efeddc;
-}
-.rose {
-  background: #eee5df;
+#product-photo-preview {
+  object-fit: contain;
+  background: #f3f4f1;
+  border-radius: 6px;
 }
 .product-info {
   padding: 23px 23px 20px;
@@ -662,22 +662,11 @@ footer span:last-child {
 .cart-row:first-child {
   padding-top: 0;
 }
-.cart-row .product-art,
-.unavailable-art {
+.cart-row .product-art {
   width: 105px;
   height: 105px;
   border-radius: 8px;
   flex-shrink: 0;
-}
-.cart-row .product-art svg {
-  width: 110px;
-  height: 100px;
-}
-.unavailable-art {
-  background: #eee;
-  display: grid;
-  place-items: center;
-  font-size: 40px;
 }
 .cart-product {
   flex: 1;
@@ -978,12 +967,13 @@ dialog h2 {
 dialog p {
   font-size: 13px;
 }
-dialog form {
-  margin-top: 22px;
+.demo-logins {
+  display: grid;
+  gap: 10px;
+  margin-top: 20px;
 }
-dialog > .text-button {
-  display: block;
-  margin: 20px auto 0;
+#auth-error {
+  margin-top: 12px;
 }
 .form-error {
   color: var(--red);
@@ -1115,10 +1105,6 @@ dialog > .text-button {
   }
   .product-art {
     height: 185px;
-  }
-  .product-art svg {
-    height: 170px;
-    width: 210px;
   }
   .cart-layout {
     grid-template-columns: 1fr;
@@ -1271,10 +1257,6 @@ dialog > .text-button {
   .product-art {
     height: 155px;
   }
-  .product-art svg {
-    height: 145px;
-    width: 170px;
-  }
   .product-info {
     padding: 16px 13px;
   }
@@ -1354,10 +1336,6 @@ dialog > .text-button {
   }
   .cart-row .product-art {
     width: 72px;
-    height: 80px;
-  }
-  .cart-row .product-art svg {
-    width: 85px;
     height: 80px;
   }
   .cart-product h3 {

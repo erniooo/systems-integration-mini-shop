@@ -31,6 +31,40 @@ function browser(base) {
   };
 }
 
+test("Lokaler Demo-Login trennt Nutzer und Verwaltung beim Kontowechsel", async (t) => {
+  const { app, db } = await createApp({
+    dbPath: ":memory:",
+    sessionSecret: "demo-login-test-secret",
+    adminPassword,
+    demoLogin: true,
+  });
+  const server = app.listen(0, "127.0.0.1");
+  await new Promise((resolve) => server.once("listening", resolve));
+  t.after(async () => {
+    await new Promise((resolve) => server.close(resolve));
+    db.close();
+  });
+  const request = browser(`http://127.0.0.1:${server.address().port}`);
+  const originalAdmin = db.prepare("SELECT id FROM customers WHERE role = 'admin'").get();
+
+  await request("/session");
+  const noCsrf = await request("/demo-login", "POST", { role: "admin" }, { csrf: false });
+  assert.equal(noCsrf.status, 403);
+  const admin = await request("/demo-login", "POST", { role: "admin" });
+  assert.equal(admin.status, 200);
+  assert.equal(admin.data.user.id, originalAdmin.id);
+  assert.equal((await request("/admin/orders")).status, 200);
+
+  const customer = await request("/demo-login", "POST", { role: "customer" });
+  assert.equal(customer.status, 200);
+  assert.equal(customer.data.user.role, "customer");
+  assert.equal((await request("/admin/orders")).status, 403);
+  await request("/logout", "POST", {});
+  await request("/session");
+  const again = await request("/demo-login", "POST", { role: "customer" });
+  assert.equal(again.data.user.id, customer.data.user.id);
+});
+
 test("Shop-Abläufe, Berechtigungen und dauerhafte Daten", async (t) => {
   const dir = await mkdtemp(join(tmpdir(), "minishop-test-"));
   const dbPath = join(dir, "shop.sqlite");

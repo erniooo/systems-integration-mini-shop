@@ -40,7 +40,7 @@
     </main>
     <footer>
       <a class="footer-brand" href="#products">mini-shop.</a
-      ><span>Kleine Dinge. Guter Alltag.</span
+      ><a href="/bildnachweise.html">Bildnachweise</a
       ><span>Systems Integration · Lab 1</span>
     </footer>
     <div id="toast" role="status" aria-live="polite" hidden></div>
@@ -51,46 +51,12 @@
           ×
         </button>
       </div>
-      <h2 id="auth-heading">Willkommen zurück.</h2>
-      <p id="auth-description" class="muted">
-        Melde dich an, um deine Bestellung abzuschließen.
-      </p>
-      <form id="auth-form">
-        <label id="register-name" hidden
-          >Name<input name="name" autocomplete="name" maxlength="100"
-        /></label>
-        <label
-          >E-Mail<input
-            name="email"
-            type="email"
-            autocomplete="username"
-            required
-            maxlength="254"
-        /></label>
-        <label
-          >Passwort<input
-            name="password"
-            type="password"
-            autocomplete="current-password"
-            required
-            maxlength="128"
-        /></label>
-        <label id="register-address" hidden
-          >Lieferadresse<textarea
-            name="address"
-            autocomplete="street-address"
-            maxlength="500"
-            rows="3"
-          ></textarea>
-        </label>
-        <p class="form-error" id="auth-error" role="alert"></p>
-        <button class="button full" type="submit" id="auth-submit">
-          Anmelden
-        </button>
-      </form>
-      <button class="text-button" id="toggle-auth">
-        Neu hier? Konto erstellen
-      </button>
+      <h2 id="auth-heading">Anmelden</h2>
+      <div class="demo-logins">
+        <button class="button full" type="button" data-demo-role="customer">Nutzer-Login</button>
+        <button class="quiet" type="button" data-demo-role="admin">Admin-Login</button>
+      </div>
+      <p class="form-error" id="auth-error" role="alert"></p>
     </dialog>
   </body>
 </html>

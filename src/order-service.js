@@ -1,50 +1,54 @@
+import { randomUUID } from "node:crypto";
 import { fail } from "./security.js";
 
-// Später kann hier ein ERP- oder Messaging-Adapter eingesetzt werden.
-// Die Oberfläche bleibt dabei unverändert.
 export class LocalOrderService {
   constructor(db) {
     this.db = db;
   }
 
-  placeOrder(customer, items) {
+  positions(items) {
     if (!Array.isArray(items) || items.length < 1 || items.length > 100) {
       fail(400, "Der Warenkorb muss 1 bis 100 Positionen enthalten.");
     }
     const seen = new Set();
+    return items.map((item) => {
+      if (
+        !item ||
+        !Number.isSafeInteger(item.productId) ||
+        !Number.isSafeInteger(item.quantity) ||
+        item.quantity < 1 ||
+        item.quantity > 99 ||
+        seen.has(item.productId)
+      ) {
+        fail(
+          400,
+          "Ungültige Warenkorbposition. Erlaubt sind 1 bis 99 Stück je Produkt.",
+        );
+      }
+      seen.add(item.productId);
+      const product = this.db
+        .prepare("SELECT * FROM products WHERE id = ? AND active = 1")
+        .get(item.productId);
+      if (!product)
+        fail(
+          409,
+          "Ein Produkt ist nicht mehr verfügbar. Bitte den Warenkorb aktualisieren.",
+        );
+      return { product, quantity: item.quantity };
+    });
+  }
+
+  placeOrder(customer, items) {
     this.db.exec("BEGIN IMMEDIATE");
     try {
-      const positions = items.map((item) => {
-        if (
-          !item ||
-          !Number.isSafeInteger(item.productId) ||
-          !Number.isSafeInteger(item.quantity) ||
-          item.quantity < 1 ||
-          item.quantity > 99 ||
-          seen.has(item.productId)
-        ) {
-          fail(
-            400,
-            "Ungültige Warenkorbposition. Erlaubt sind 1 bis 99 Stück je Produkt.",
-          );
-        }
-        seen.add(item.productId);
-        const product = this.db
-          .prepare("SELECT * FROM products WHERE id = ? AND active = 1")
-          .get(item.productId);
-        if (!product)
-          fail(
-            409,
-            "Ein Produkt ist nicht mehr verfügbar. Bitte den Warenkorb aktualisieren.",
-          );
-        // Lab 2 prüft eine Momentaufnahme; eine Reservierung im ERP gibt es noch nicht.
-        if (product.stock !== null && item.quantity > product.stock)
+      const positions = this.positions(items);
+      for (const { product, quantity } of positions) {
+        if (product.stock !== null && quantity > product.stock)
           fail(
             409,
             `Für „${product.name}“ reicht der Bestand laut letztem Import nicht aus.`,
           );
-        return { product, quantity: item.quantity };
-      });
+      }
       // Preise und Gesamtbetrag werden ausschließlich anhand der Datenbank berechnet.
       const total = positions.reduce(
         (sum, item) => sum + item.product.price_cents * item.quantity,
@@ -96,5 +100,50 @@ export class LocalOrderService {
             )
             .all(customerId);
     return ids.map(({ id }) => this.getOrder(id));
+  }
+}
+
+export class ErpOrderService extends LocalOrderService {
+  constructor(db, erp) {
+    super(db);
+    this.erp = erp;
+  }
+
+  async placeOrder(customer, items, requestID) {
+    if (typeof requestID !== "string" ||
+        !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(requestID))
+      fail(400, "Die Kennung für den Kaufversuch fehlt oder ist ungültig.");
+    const lines = this.positions(items).map(({ product, quantity }) => {
+      if (!product.erp_id)
+        fail(409, `„${product.name}“ ist keinem ERP-Produkt zugeordnet.`);
+      return {
+        productID: product.erp_id,
+        quantity,
+        unitPriceCents: product.price_cents,
+      };
+    });
+    const { erp_buyer_id: buyer } = this.db.prepare(
+      "UPDATE customers SET erp_buyer_id=COALESCE(erp_buyer_id, ?) WHERE id=? RETURNING erp_buyer_id",
+    ).get(randomUUID(), customer.id);
+    return this.erp.placeOrder({
+      requestID: requestID.toLowerCase(),
+      buyer,
+      name: customer.name,
+      email: customer.email,
+      address: customer.address,
+      items: lines,
+    });
+  }
+
+  async listOrders(customerId = null) {
+    const history = super.listOrders(customerId);
+    const buyer = customerId === null ? undefined : this.db.prepare(
+      "SELECT erp_buyer_id FROM customers WHERE id=?",
+    ).get(customerId)?.erp_buyer_id;
+    if (customerId !== null && !buyer) return history;
+    const orders = await this.erp.listOrders(buyer);
+    return [...orders, ...history].sort(
+      (a, b) => Date.parse(b.created_at) - Date.parse(a.created_at),
+    );
   }
 }
